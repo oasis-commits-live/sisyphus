@@ -1,0 +1,80 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+
+    function isValidPlayerProfile(data) {
+      return data.keys().hasAll([
+        'uid',
+        'handle',
+        'avatarSkin',
+        'tauntMotto',
+        'peakStep',
+        'totalFalls',
+        'worstFall',
+        'rageScore',
+        'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'uid',
+        'handle',
+        'avatarSkin',
+        'tauntMotto',
+        'peakStep',
+        'totalFalls',
+        'worstFall',
+        'rageScore',
+        'updatedAt'
+      ]) &&
+      data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 &&
+      data.uid == request.auth.uid &&
+      data.handle is string && data.handle.size() >= 2 && data.handle.size() <= 24 &&
+      data.avatarSkin is string && data.avatarSkin in ['chicken', 'cauldron', 'astronaut', 'frog'] &&
+      data.tauntMotto is string && data.tauntMotto.size() >= 1 && data.tauntMotto.size() <= 80 &&
+      data.peakStep is int && data.peakStep >= 1 && data.peakStep <= 500 &&
+      data.totalFalls is int && data.totalFalls >= 0 && data.totalFalls <= 1000000 &&
+      data.worstFall is int && data.worstFall >= 0 && data.worstFall <= 500 &&
+      data.rageScore is int && data.rageScore >= 0 && data.rageScore <= 100 &&
+      data.updatedAt == request.time;
+    }
+
+    match /leaderboard/{userId} {
+      allow get: if isValidId(userId) && (resource == null || resource.data.peakStep >= 1);
+      allow list: if resource.data.peakStep >= 1 && resource.data.peakStep <= 500;
+      allow create: if isSignedIn() && isValidId(userId) && userId == request.auth.uid && isValidPlayerProfile(incoming());
+      allow update: if isSignedIn() && isValidId(userId) && userId == request.auth.uid && isValidPlayerProfile(incoming()) && (
+        incoming().uid == existing().uid &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'handle',
+          'avatarSkin',
+          'tauntMotto',
+          'peakStep',
+          'totalFalls',
+          'worstFall',
+          'rageScore',
+          'updatedAt'
+        ])
+      );
+      allow delete: if isSignedIn() && isValidId(userId) && userId == request.auth.uid;
+    }
+  }
+}

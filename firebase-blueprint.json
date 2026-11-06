@@ -1,0 +1,75 @@
+{
+  "entities": {
+    "PlayerProfile": {
+      "title": "PlayerProfile",
+      "description": "Public player profile and career climbing statistics across the 500 steps.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Authenticated user UID",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "handle": {
+          "type": "string",
+          "description": "Player display nickname on the global leaderboard",
+          "minLength": 2,
+          "maxLength": 24
+        },
+        "avatarSkin": {
+          "type": "string",
+          "description": "Selected voxel climber character skin",
+          "enum": ["chicken", "cauldron", "astronaut", "frog"]
+        },
+        "tauntMotto": {
+          "type": "string",
+          "description": "Feisty trash-talk motto shown on the global leaderboard",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "peakStep": {
+          "type": "integer",
+          "description": "Highest step reached out of 500"
+        },
+        "totalFalls": {
+          "type": "integer",
+          "description": "Cumulative falls suffered"
+        },
+        "worstFall": {
+          "type": "integer",
+          "description": "Most steps lost in a single fall"
+        },
+        "rageScore": {
+          "type": "integer",
+          "description": "Peak rage index from 0 to 100"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last update server timestamp"
+        }
+      },
+      "required": [
+        "uid",
+        "handle",
+        "avatarSkin",
+        "tauntMotto",
+        "peakStep",
+        "totalFalls",
+        "worstFall",
+        "rageScore",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/leaderboard/{userId}": {
+      "schema": {
+        "$ref": "#/entities/PlayerProfile"
+      },
+      "description": "Global leaderboard entries keyed by user UID"
+    }
+  }
+}

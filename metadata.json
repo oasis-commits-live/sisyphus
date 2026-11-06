@@ -1,0 +1,6 @@
+{
+  "name": "Sisyphean Ascent: 100 Steps of Nothing",
+  "description": "A brutalist isometric rage-climbing game of 100 unforgiving steps where a single mistake wipes all progress, culminating in a deadpan philosophical ending.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
