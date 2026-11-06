@@ -351,12 +351,56 @@ const BIOME_PALETTES: Record<
   },
 };
 
+export const GROUND_FLOOR_Y = -1.35;
+export const GROUND_SPAWN_X = -1.45;
+export const GROUND_SPAWN_Z = 2.85;
+
+export const GROUND_STEP_META: LevelStep = {
+  stepNumber: 0,
+  biome: 1,
+  title: 'Sanctuary Ground Floor (Base Camp)',
+  x: GROUND_SPAWN_X,
+  y: GROUND_FLOOR_Y,
+  z: GROUND_SPAWN_Z,
+  width: 6.0,
+  depth: 6.0,
+  height: 0.4,
+  dirX: 0.453,
+  dirZ: -0.891,
+  turnAngleDeg: 0,
+  horizGap: 3.19,
+  clearGap: 1.35,
+  vertRise: 0.9,
+  chargeSpeedMultiplier: 1.0,
+  surfaceTheme: 'sanctuary',
+  hazard: 'none',
+  friction: 0.92,
+  restitution: 0.15,
+  hazardSpeed: 0,
+  hazardPhase: 0,
+  hazardAmplitude: 0,
+  vehicleStyle: 'golem',
+  hasTreeLeft: false,
+  hasTreeRight: false,
+  hasBarrierCenter: false,
+  conveyorDirX: 0,
+  conveyorDirZ: 0,
+  decoyLedge: undefined,
+  topColorHex: 0x52b788,
+  topAltColorHex: 0x40916c,
+  sideColorHex: 0x7f5539,
+  accentHex: 0xd97706,
+  psychologicalTrap:
+    'Vault up from the Sanctuary Ground Floor onto Step 1 to begin your 500-step ascent.',
+};
+
 export function generate500Levels(seed = DEFAULT_SPIRE_SEED): LevelStep[] {
   const rng = mulberry32(seed);
   const steps: LevelStep[] = [];
 
   let curX = 0;
-  let curY = 0;
+  // Step 1 sits 0.90m above the Sanctuary Ground Floor (GROUND_FLOOR_Y = -1.35 -> Step 1 y = -0.45)
+  let curY = -0.45;
   let curZ = 0;
   // In isometric projection (camera at +X, +Y, +Z),
   // heading = -1.15 rad (+X, -Z) climbs cleanly UP-RIGHT on screen,
@@ -392,9 +436,9 @@ export function generate500Levels(seed = DEFAULT_SPIRE_SEED): LevelStep[] {
     }
 
     let turnAngleDeg = 0;
-    let horizGap = 0;
-    let clearGap = 0;
-    let vertRise = 0;
+    let horizGap = i === 1 ? 3.19 : 0;
+    let clearGap = i === 1 ? 1.35 : 0;
+    let vertRise = i === 1 ? 0.9 : 0;
     let dx = Number(Math.cos(headingRad).toFixed(4));
     let dz = Number(Math.sin(headingRad).toFixed(4));
 

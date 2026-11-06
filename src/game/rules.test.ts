@@ -88,11 +88,12 @@ test('Every single step transition (1 -> 500) is 100% mathematically reachable w
   }
 });
 
-test('Multi-step simulated ascent cleanly vaults from Step 1 -> Step 2 -> Step 3 -> Step 4', () => {
+test('Multi-step simulated ascent starts on the Sanctuary Ground Floor (Step 0) and cleanly vaults Ground -> Step 1 -> Step 2 -> Step 3 -> Step 4', () => {
   const state = createInitialPlayerState();
+  assert.equal(state.currentStep, 0);
   let simClock = 0;
 
-  for (let targetStep = 2; targetStep <= 4; targetStep++) {
+  for (let targetStep = 1; targetStep <= 4; targetStep++) {
     const fromStep = targetStep - 1;
     const ideal = computeIdealJumpToNextStep(fromStep, simClock);
     const jumpVel = computeJumpVelocity(ideal.chargeRatio, ideal.aimAngle);
@@ -120,7 +121,7 @@ test('Multi-step simulated ascent cleanly vaults from Step 1 -> Step 2 -> Step 3
     );
     assert.equal(state.currentStep, targetStep);
   }
-  assert.equal(state.coinsCollected, 15);
+  assert.equal(state.coinsCollected, 20);
 });
 
 test('Falling off an upper monolith step lands logically on a lower tier and mutates upper steps', () => {

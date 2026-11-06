@@ -1,4 +1,8 @@
 import {
+  GROUND_FLOOR_Y,
+  GROUND_SPAWN_X,
+  GROUND_SPAWN_Z,
+  GROUND_STEP_META,
   LEVELS_500,
   LevelStep,
   PHILOSOPHICAL_ENDING_QUOTE,
@@ -71,7 +75,45 @@ export const CHARGE_FULL_DURATION = 0.88;
 export const GROUND_NUDGE_SPEED = 2.65;
 export const AIR_CONTROL_ACCEL = 3.2;
 
-export function createInitialPlayerState(startStep = 1): PlayerState {
+export function createInitialPlayerState(startStep = 0): PlayerState {
+  if (startStep <= 0) {
+    const firstStep = LEVELS_500[0];
+    const initialAim = Math.atan2(
+      firstStep.z - GROUND_SPAWN_Z,
+      firstStep.x - GROUND_SPAWN_X
+    );
+    return {
+      x: GROUND_SPAWN_X,
+      y: GROUND_FLOOR_Y,
+      z: GROUND_SPAWN_Z,
+      vx: 0,
+      vy: 0,
+      vz: 0,
+      grounded: true,
+      isCharging: false,
+      chargeRatio: 0,
+      chargeDirection: 1,
+      chargeHoldTime: 0,
+      aimAngle: initialAim,
+      currentStep: 0,
+      peakStep: 0,
+      lastStableStep: 0,
+      fallsCount: 0,
+      biggestFallLoss: 0,
+      rageScore: 0,
+      coinsCollected: 0,
+      spireMutations: 0,
+      crumbleTimer: 0,
+      coyoteTimer: 0.12,
+      jumpBufferTimer: 0,
+      glitchTimer: 0,
+      teeterAmount: 0,
+      isTumbling: false,
+      tumbleSpin: 0,
+      won: false,
+    };
+  }
+
   const clampedIdx = Math.max(0, Math.min(TOTAL_LEVELS - 1, startStep - 1));
   const stepObj = LEVELS_500[clampedIdx] || LEVELS_500[0];
   const nextObj =
@@ -412,9 +454,25 @@ export function computeAimAlignment(
 }
 
 export function computeIdealJumpToNextStep(
-  fromStepNumber: number,
+  fromStepNumber = 0,
   elapsedTime = 0
 ): { aimAngle: number; chargeRatio: number } {
+  if (fromStepNumber <= 0) {
+    const next = LEVELS_500[0];
+    const align = computeAimAlignment(
+      GROUND_SPAWN_X,
+      GROUND_FLOOR_Y,
+      GROUND_SPAWN_Z,
+      0,
+      next,
+      elapsedTime
+    );
+    return {
+      aimAngle: align.idealAimAngle,
+      chargeRatio: Number((align.idealChargePercent / 100).toFixed(2)),
+    };
+  }
+
   const idx = Math.max(0, Math.min(TOTAL_LEVELS - 2, fromStepNumber - 1));
   const current = LEVELS_500[idx];
   const next = LEVELS_500[idx + 1];
@@ -535,7 +593,10 @@ export function advancePlayerPhysics(
   const prevY = state.y;
   const prevZ = state.z;
 
-  const activeStepObj = LEVELS_500[state.currentStep - 1] || LEVELS_500[0];
+  const activeStepObj =
+    state.currentStep <= 0
+      ? GROUND_STEP_META
+      : LEVELS_500[state.currentStep - 1] || LEVELS_500[0];
   const prevRuntime = getStepRuntimeOffset(
     activeStepObj,
     elapsedTime - simDt,
@@ -670,16 +731,12 @@ export function advancePlayerPhysics(
     state.x += state.vx * simDt;
     state.z += state.vz * simDt;
 
-    if (state.currentStep === 1 && !result.knockedByHazard) {
-      state.x = Math.max(
-        platCenterX - halfW * 0.92,
-        Math.min(platCenterX + halfW * 0.92, state.x)
-      );
-      state.z = Math.max(
-        platCenterZ - halfD * 0.92,
-        Math.min(platCenterZ + halfD * 0.92, state.z)
-      );
-      state.y = activeStepObj.y;
+    if (state.currentStep <= 0 && !result.knockedByHazard) {
+      // Standing on the Sanctuary Ground Floor: player can walk around the base courtyard freely
+      state.x = Math.max(-7.5, Math.min(7.5, state.x));
+      state.z = Math.max(-1.8, Math.min(6.2, state.z));
+      state.y = GROUND_FLOOR_Y;
+      state.teeterAmount = 0;
     } else {
       const newRelX = Math.abs(state.x - platCenterX);
       const newRelZ = Math.abs(state.z - platCenterZ);
@@ -859,18 +916,29 @@ export function advancePlayerPhysics(
       }
     }
 
-    // River Gorge Floor Catch at y <= -1.6m
-    if (!state.grounded && state.y <= -1.6) {
-      const catchStep = findLogicalLowerLandingStep(
-        state.x,
-        state.z,
-        Math.min(12, Math.max(1, state.lastStableStep - 1))
-      );
+    // Sanctuary Ground Floor Collision at y <= GROUND_FLOOR_Y (-1.35m)
+    if (!state.grounded && state.y <= GROUND_FLOOR_Y) {
+      const landOnGround = state.lastStableStep <= 8;
+      const catchStep = landOnGround
+        ? GROUND_STEP_META
+        : findLogicalLowerLandingStep(
+            state.x,
+            state.z,
+            Math.min(12, Math.max(1, state.lastStableStep - 1))
+          );
       const lost = Math.max(0, state.lastStableStep - catchStep.stepNumber);
 
-      state.x = catchStep.x;
-      state.y = catchStep.y;
-      state.z = catchStep.z;
+      if (landOnGround) {
+        // Land naturally on the solid Sanctuary Ground Floor
+        state.x = Math.max(-7.5, Math.min(7.5, state.x));
+        state.z = Math.max(-4.5, Math.min(6.2, state.z));
+        state.y = GROUND_FLOOR_Y;
+      } else {
+        state.x = catchStep.x;
+        state.y = catchStep.y;
+        state.z = catchStep.z;
+      }
+
       state.vx = 0;
       state.vy = 0;
       state.vz = 0;
@@ -887,8 +955,8 @@ export function advancePlayerPhysics(
       const nextStep =
         LEVELS_500[Math.min(TOTAL_LEVELS - 1, catchStep.stepNumber)];
       state.aimAngle = Math.atan2(
-        nextStep.z - catchStep.z,
-        nextStep.x - catchStep.x
+        nextStep.z - state.z,
+        nextStep.x - state.x
       );
 
       if (lost >= 1) {
@@ -902,7 +970,7 @@ export function advancePlayerPhysics(
           lost,
           state.rageScore
         );
-        mutateUpperStepsOnFall(catchStep.stepNumber, state.fallsCount);
+        mutateUpperStepsOnFall(Math.max(1, catchStep.stepNumber), state.fallsCount);
         result.fellToLowerStep = true;
         result.stepsLost = lost;
       }

@@ -25,10 +25,10 @@ interface LeaderboardModalProps {
 }
 
 const SKIN_OPTIONS: { id: ClimberSkin; label: string; color: string }[] = [
-  { id: 'cauldron', label: 'Obsidian Cauldron', color: '#f97316' },
-  { id: 'frog', label: 'Celadon Jade Idol', color: '#10b981' },
-  { id: 'chicken', label: 'Gilded Astrolabe', color: '#facc15' },
-  { id: 'astronaut', label: 'Astral Void Prism', color: '#6366f1' },
+  { id: 'cauldron', label: 'Crimson Atlas Wayfarer', color: '#ea580c' },
+  { id: 'frog', label: 'Emerald Ranger Armor', color: '#10b981' },
+  { id: 'chicken', label: 'Gilded Sovereign Plate', color: '#facc15' },
+  { id: 'astronaut', label: 'Astral Cobalt Vanguard', color: '#6366f1' },
 ];
 
 export const LeaderboardModal: React.FC<LeaderboardModalProps> = ({

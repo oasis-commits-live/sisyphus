@@ -14,6 +14,7 @@ import { LeaderboardModal } from './components/LeaderboardModal';
 import {
   BIOME_BLUEPRINTS,
   DEFAULT_SPIRE_SEED,
+  GROUND_STEP_META,
   LEVELS_500,
   PHILOSOPHICAL_ENDING_QUOTE,
   TOTAL_LEVELS,
@@ -30,8 +31,8 @@ import {
 } from './firebase';
 
 const INITIAL_TELEMETRY: TelemetryUpdate = {
-  currentStep: 1,
-  peakStep: 1,
+  currentStep: 0,
+  peakStep: 0,
   fallsCount: 0,
   biggestFallLoss: 0,
   rageScore: 0,
@@ -43,7 +44,7 @@ const INITIAL_TELEMETRY: TelemetryUpdate = {
   isCharging: false,
   isTumbling: false,
   glitchActive: false,
-  idealChargePercent: 60,
+  idealChargePercent: 62,
   angleErrorDeg: 0,
   isAimAligned: true,
   altitude: 0,
@@ -53,7 +54,7 @@ const INITIAL_TELEMETRY: TelemetryUpdate = {
   windLabel: 'CALM',
   windStrength: 0,
   windAngleRad: 0,
-  activeStepMeta: LEVELS_500[0],
+  activeStepMeta: GROUND_STEP_META,
   taunt: null,
   won: false,
 };
@@ -423,72 +424,154 @@ export default function App() {
                 role="img"
                 aria-label="Sisyphean Monolith: 500 Steps of Nothing"
               >
-                {/* Sculpted Isometric Limestone Plinth + Obsidian Cauldron Emblem */}
+                {/* Sculpted Isometric Ground Trailhead + Block-Art Atlas Wayfarer Emblem */}
                 <g transform="translate(8, 10)">
-                  {/* Stepped Limestone Monolith */}
+                  {/* Sanctuary Ground Plinth */}
                   <polygon
-                    points="46,58 88,78 46,98 4,78"
-                    fill="#e6d5b8"
+                    points="46,66 88,84 46,102 4,84"
+                    fill="#52b788"
                     stroke="#18181b"
                     strokeWidth="3"
                   />
                   <polygon
-                    points="4,78 46,98 46,118 4,98"
-                    fill="#b8a386"
+                    points="4,84 46,102 46,118 4,100"
+                    fill="#40916c"
                     stroke="#18181b"
                     strokeWidth="3"
                   />
                   <polygon
-                    points="88,78 46,98 46,118 88,98"
-                    fill="#8c765a"
+                    points="88,84 46,102 46,118 88,100"
+                    fill="#2d6a4f"
                     stroke="#18181b"
                     strokeWidth="3"
                   />
-                  {/* Obsidian Cauldron Vessel + Glowing Ember Core */}
+                  {/* Chained Runic Boulder Backpack on Wayfarer's Back */}
                   <rect
-                    x="28"
-                    y="40"
-                    width="36"
-                    height="26"
-                    fill="#1c1917"
-                    stroke="#18181b"
-                    strokeWidth="3"
-                  />
-                  <rect
-                    x="25"
-                    y="36"
-                    width="42"
-                    height="6"
-                    fill="#d97706"
+                    x="14"
+                    y="24"
+                    width="20"
+                    height="24"
+                    fill="#292524"
                     stroke="#18181b"
                     strokeWidth="2.5"
                   />
-                  {/* Pilgrim Relic Torso + Glowing Furnace Visor */}
+                  <rect
+                    x="19"
+                    y="29"
+                    width="10"
+                    height="14"
+                    fill="#38bdf8"
+                    stroke="#18181b"
+                    strokeWidth="1.5"
+                  />
+                  {/* Flowing Crimson Cloak Tail */}
+                  <polygon
+                    points="22,46 10,64 24,62 28,48"
+                    fill="#ea580c"
+                    stroke="#18181b"
+                    strokeWidth="2.5"
+                  />
+                  {/* Articulated Block Boots */}
                   <rect
                     x="32"
-                    y="16"
+                    y="58"
+                    width="11"
+                    height="12"
+                    fill="#0f172a"
+                    stroke="#18181b"
+                    strokeWidth="2.5"
+                  />
+                  <rect
+                    x="47"
+                    y="58"
+                    width="11"
+                    height="12"
+                    fill="#0f172a"
+                    stroke="#18181b"
+                    strokeWidth="2.5"
+                  />
+                  {/* Armored Slate Cuirass & Crimson Tunic */}
+                  <rect
+                    x="30"
+                    y="32"
                     width="28"
-                    height="22"
-                    fill="#d6d3d1"
+                    height="26"
+                    fill="#1e293b"
                     stroke="#18181b"
                     strokeWidth="3"
                   />
                   <rect
-                    x="44"
-                    y="22"
-                    width="14"
-                    height="7"
-                    fill="#f97316"
+                    x="34"
+                    y="36"
+                    width="20"
+                    height="14"
+                    fill="#c2410c"
                     stroke="#18181b"
                     strokeWidth="2"
                   />
-                  {/* Levitating Gold Halo Ring */}
                   <rect
-                    x="36"
-                    y="6"
-                    width="20"
+                    x="30"
+                    y="50"
+                    width="28"
                     height="5"
-                    fill="#facc15"
+                    fill="#f59e0b"
+                    stroke="#18181b"
+                    strokeWidth="2"
+                  />
+                  {/* Wayfarer Horned Helm & Glowing Cyan Voxel Eyes */}
+                  <rect
+                    x="32"
+                    y="12"
+                    width="24"
+                    height="20"
+                    fill="#0f172a"
+                    stroke="#18181b"
+                    strokeWidth="3"
+                  />
+                  <rect
+                    x="30"
+                    y="10"
+                    width="28"
+                    height="8"
+                    fill="#1e293b"
+                    stroke="#18181b"
+                    strokeWidth="2.5"
+                  />
+                  <rect
+                    x="40"
+                    y="4"
+                    width="8"
+                    height="7"
+                    fill="#f59e0b"
+                    stroke="#18181b"
+                    strokeWidth="2"
+                  />
+                  <rect
+                    x="39"
+                    y="20"
+                    width="5"
+                    height="4"
+                    fill="#38bdf8"
+                  />
+                  <rect
+                    x="48"
+                    y="20"
+                    width="5"
+                    height="4"
+                    fill="#38bdf8"
+                  />
+                  {/* Climber's Steel & Brass Pickaxe */}
+                  <line
+                    x1="64"
+                    y1="64"
+                    x2="72"
+                    y2="18"
+                    stroke="#78350f"
+                    strokeWidth="4"
+                  />
+                  <polygon
+                    points="60,18 84,22 74,12"
+                    fill="#e2e8f0"
                     stroke="#18181b"
                     strokeWidth="2"
                   />

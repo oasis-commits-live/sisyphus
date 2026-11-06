@@ -2,6 +2,10 @@ import React, { useEffect, useRef } from 'react';
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import {
+  GROUND_FLOOR_Y,
+  GROUND_SPAWN_X,
+  GROUND_SPAWN_Z,
+  GROUND_STEP_META,
   LEVELS_500,
   LevelStep,
   PHILOSOPHICAL_ENDING_QUOTE,
@@ -182,7 +186,7 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
   const onReachSummitRef = useRef(onReachSummit);
   onReachSummitRef.current = onReachSummit;
 
-  const playerRef = useRef<PlayerState>(createInitialPlayerState(1));
+  const playerRef = useRef<PlayerState>(createInitialPlayerState(0));
   const simTimeRef = useRef<number>(0);
   const traumaRef = useRef<number>(0);
   const hitstopRef = useRef<number>(0);
@@ -204,7 +208,7 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
 
   useEffect(() => {
     if (resetSignal > 0) {
-      const nextState = createInitialPlayerState(1);
+      const nextState = createInitialPlayerState(0);
       playerRef.current = nextState;
       simTimeRef.current = 0;
       traumaRef.current = 0;
@@ -220,13 +224,13 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
         nextState.y,
         nextState.z,
         nextState.aimAngle,
-        LEVELS_500[1],
+        LEVELS_500[0],
         0
       );
 
       onTelemetryRef.current({
-        currentStep: 1,
-        peakStep: 1,
+        currentStep: 0,
+        peakStep: 0,
         fallsCount: 0,
         biggestFallLoss: 0,
         rageScore: 0,
@@ -248,7 +252,7 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
         windLabel: 'CALM',
         windStrength: 0,
         windAngleRad: 0,
-        activeStepMeta: LEVELS_500[0],
+        activeStepMeta: GROUND_STEP_META,
         taunt: null,
         won: false,
       });
@@ -584,6 +588,67 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
     }
     windmillTower.add(windmillBlades);
     valleyDioramaGroup.add(windmillTower);
+
+    // Ground Floor Trailhead Base Camp Courtyard (flush with the valley meadow at y = GROUND_FLOOR_Y)
+    const groundCourtyardGroup = new THREE.Group();
+    groundCourtyardGroup.position.set(GROUND_SPAWN_X, 0.34, GROUND_SPAWN_Z);
+    const courtyardRim = new THREE.Mesh(
+      unitBoxGeo,
+      new THREE.MeshStandardMaterial({
+        color: 0xd97706,
+        roughness: 0.45,
+        metalness: 0.3,
+      })
+    );
+    courtyardRim.scale.set(2.45, 0.04, 2.45);
+    groundCourtyardGroup.add(courtyardRim);
+
+    const courtyardStone = new THREE.Mesh(
+      unitBoxGeo,
+      new THREE.MeshStandardMaterial({
+        color: 0xe7e5e4,
+        roughness: 0.7,
+      })
+    );
+    courtyardStone.scale.set(2.2, 0.05, 2.2);
+    courtyardStone.position.y = 0.01;
+    groundCourtyardGroup.add(courtyardStone);
+
+    // Inlaid Ground Trailhead Chevron pointing toward Step 1
+    const groundArrowGroup = new THREE.Group();
+    groundArrowGroup.position.y = 0.045;
+    groundArrowGroup.rotation.y = Math.atan2(
+      -(LEVELS_500[0].z - GROUND_SPAWN_Z),
+      LEVELS_500[0].x - GROUND_SPAWN_X
+    );
+    const groundArrowShaft = new THREE.Mesh(unitBoxGeo, lanternMat);
+    groundArrowShaft.scale.set(0.75, 0.02, 0.18);
+    groundArrowShaft.position.set(0.15, 0, 0);
+    groundArrowGroup.add(groundArrowShaft);
+    const groundWingL = new THREE.Mesh(unitBoxGeo, lanternMat);
+    groundWingL.scale.set(0.38, 0.02, 0.14);
+    groundWingL.position.set(0.45, 0, -0.15);
+    groundWingL.rotation.y = -0.65;
+    groundArrowGroup.add(groundWingL);
+    const groundWingR = new THREE.Mesh(unitBoxGeo, lanternMat);
+    groundWingR.scale.set(0.38, 0.02, 0.14);
+    groundWingR.position.set(0.45, 0, 0.15);
+    groundWingR.rotation.y = 0.65;
+    groundArrowGroup.add(groundWingR);
+    groundCourtyardGroup.add(groundArrowGroup);
+
+    // Two low trailhead boundary bollards flanking the ground courtyard
+    [-1.05, 1.05].forEach((bx) => {
+      const bollard = new THREE.Mesh(unitBoxGeo, ruinStoneMat);
+      bollard.scale.set(0.28, 0.45, 0.28);
+      bollard.position.set(bx, 0.24, 0.95);
+      groundCourtyardGroup.add(bollard);
+      const cap = new THREE.Mesh(unitBoxGeo, lanternMat);
+      cap.scale.set(0.18, 0.14, 0.18);
+      cap.position.set(bx, 0.52, 0.95);
+      groundCourtyardGroup.add(cap);
+    });
+    valleyDioramaGroup.add(groundCourtyardGroup);
 
     scene.add(valleyDioramaGroup);
 
@@ -1013,88 +1078,293 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
     scene.add(nextStepBeaconGroup);
 
     // =========================================================================
-    // SCULPTED ARCHITECTURAL CLIMBER VESSEL
+    // ARTICULATED BLOCK-ART WAYFARER / ATLAS CLIMBER CHARACTER
+    // (Voxel-Block Adventurer with Articulated Boots, Tunic, Flowing Cloak,
+    //  Chained Runic Sisyphean Boulder Pack, Horned Wayfarer Helm & Great-Pick)
     // =========================================================================
     const playerGroup = new THREE.Group();
     const vesselBodyGroup = new THREE.Group();
 
-    const potMat = new THREE.MeshStandardMaterial({
-      color: 0x1c1917,
-      roughness: 0.38,
-      metalness: 0.72,
+    const armorSlateMat = new THREE.MeshStandardMaterial({
+      color: 0x1e293b,
+      roughness: 0.42,
+      metalness: 0.62,
     });
-    const potRimMat = new THREE.MeshStandardMaterial({
-      color: 0xd97706,
+    const bootDarkMat = new THREE.MeshStandardMaterial({
+      color: 0x0f172a,
+      roughness: 0.55,
+      metalness: 0.4,
+    });
+    const leatherStrapMat = new THREE.MeshStandardMaterial({
+      color: 0x78350f,
+      roughness: 0.72,
+    });
+    const goldTrimMat = new THREE.MeshStandardMaterial({
+      color: 0xf59e0b,
       roughness: 0.28,
       metalness: 0.82,
     });
     const bodySkinMat = new THREE.MeshStandardMaterial({
-      color: 0xd6d3d1,
-      roughness: 0.4,
-      metalness: 0.3,
+      color: 0xc2410c,
+      roughness: 0.48,
+      metalness: 0.22,
+    });
+    const cloakFabricMat = new THREE.MeshStandardMaterial({
+      color: 0xea580c,
+      roughness: 0.58,
+      metalness: 0.12,
     });
     const coreGlowMat = new THREE.MeshStandardMaterial({
-      color: 0xf97316,
-      emissive: 0xea580c,
-      emissiveIntensity: 1.3,
+      color: 0x38bdf8,
+      emissive: 0x0284c7,
+      emissiveIntensity: 1.45,
     });
-    const haloMat = new THREE.MeshStandardMaterial({
-      color: 0xfacc15,
-      roughness: 0.25,
-      metalness: 0.85,
+    const boulderStoneMat = new THREE.MeshStandardMaterial({
+      color: 0x292524,
+      roughness: 0.78,
+      metalness: 0.25,
+    });
+    const boulderInnerMat = new THREE.MeshStandardMaterial({
+      color: 0x44403c,
+      roughness: 0.72,
+      metalness: 0.3,
+    });
+    const steelBladeMat = new THREE.MeshStandardMaterial({
+      color: 0xe2e8f0,
+      roughness: 0.22,
+      metalness: 0.88,
     });
 
-    const potMesh = new THREE.Mesh(unitBoxGeo, potMat);
-    potMesh.scale.set(0.56, 0.34, 0.56);
-    potMesh.position.y = 0.17;
-    vesselBodyGroup.add(potMesh);
+    // 1. Articulated Left & Right Legs + Heavy Climbing Boots
+    const buildClimberLeg = (sideZ: number) => {
+      const legGroup = new THREE.Group();
+      legGroup.position.set(0, 0.28, sideZ);
 
-    const potRim = new THREE.Mesh(unitBoxGeo, potRimMat);
-    potRim.scale.set(0.64, 0.08, 0.64);
-    potRim.position.y = 0.34;
-    vesselBodyGroup.add(potRim);
+      const thighMesh = new THREE.Mesh(unitBoxGeo, armorSlateMat);
+      thighMesh.scale.set(0.15, 0.18, 0.13);
+      thighMesh.position.set(0, -0.07, 0);
+      legGroup.add(thighMesh);
 
-    const torsoMesh = new THREE.Mesh(unitBoxGeo, bodySkinMat);
-    torsoMesh.scale.set(0.38, 0.44, 0.38);
-    torsoMesh.position.y = 0.58;
-    vesselBodyGroup.add(torsoMesh);
+      const kneeGuard = new THREE.Mesh(unitBoxGeo, goldTrimMat);
+      kneeGuard.scale.set(0.17, 0.06, 0.14);
+      kneeGuard.position.set(0.02, -0.14, 0);
+      legGroup.add(kneeGuard);
 
-    const visorMesh = new THREE.Mesh(unitBoxGeo, coreGlowMat);
-    visorMesh.scale.set(0.12, 0.12, 0.26);
-    visorMesh.position.set(0.18, 0.64, 0);
-    vesselBodyGroup.add(visorMesh);
+      const bootMesh = new THREE.Mesh(unitBoxGeo, bootDarkMat);
+      bootMesh.scale.set(0.21, 0.11, 0.15);
+      bootMesh.position.set(0.03, -0.22, 0);
+      legGroup.add(bootMesh);
 
-    const haloRing = new THREE.Mesh(unitBoxGeo, haloMat);
-    haloRing.scale.set(0.32, 0.06, 0.32);
-    haloRing.position.set(0, 0.9, 0);
-    vesselBodyGroup.add(haloRing);
+      const bootSole = new THREE.Mesh(unitBoxGeo, leatherStrapMat);
+      bootSole.scale.set(0.22, 0.035, 0.16);
+      bootSole.position.set(0.03, -0.265, 0);
+      legGroup.add(bootSole);
 
-    const shardL = new THREE.Mesh(unitBoxGeo, potRimMat);
-    shardL.scale.set(0.18, 0.22, 0.1);
-    shardL.position.set(0, 0.58, -0.26);
+      return legGroup;
+    };
+
+    const legLGroup = buildClimberLeg(-0.1);
+    const legRGroup = buildClimberLeg(0.1);
+    vesselBodyGroup.add(legLGroup);
+    vesselBodyGroup.add(legRGroup);
+
+    // 2. Layered Tunic, Belt & Armored Chest Cuirass
+    const torsoLower = new THREE.Mesh(unitBoxGeo, bodySkinMat);
+    torsoLower.scale.set(0.28, 0.16, 0.34);
+    torsoLower.position.set(0, 0.35, 0);
+    vesselBodyGroup.add(torsoLower);
+
+    const beltMesh = new THREE.Mesh(unitBoxGeo, leatherStrapMat);
+    beltMesh.scale.set(0.3, 0.06, 0.36);
+    beltMesh.position.set(0, 0.4, 0);
+    vesselBodyGroup.add(beltMesh);
+
+    const beltBuckle = new THREE.Mesh(unitBoxGeo, goldTrimMat);
+    beltBuckle.scale.set(0.04, 0.08, 0.1);
+    beltBuckle.position.set(0.15, 0.4, 0);
+    vesselBodyGroup.add(beltBuckle);
+
+    const torsoChest = new THREE.Mesh(unitBoxGeo, armorSlateMat);
+    torsoChest.scale.set(0.3, 0.26, 0.36);
+    torsoChest.position.set(0, 0.54, 0);
+    vesselBodyGroup.add(torsoChest);
+
+    const chestPlaca = new THREE.Mesh(unitBoxGeo, bodySkinMat);
+    chestPlaca.scale.set(0.32, 0.18, 0.24);
+    chestPlaca.position.set(0.01, 0.55, 0);
+    vesselBodyGroup.add(chestPlaca);
+
+    const chestEmblem = new THREE.Mesh(unitBoxGeo, goldTrimMat);
+    chestEmblem.scale.set(0.04, 0.1, 0.1);
+    chestEmblem.position.set(0.165, 0.56, 0);
+    vesselBodyGroup.add(chestEmblem);
+
+    // Scarf Collar
+    const scarfCollar = new THREE.Mesh(unitBoxGeo, cloakFabricMat);
+    scarfCollar.scale.set(0.32, 0.08, 0.38);
+    scarfCollar.position.set(0, 0.67, 0);
+    vesselBodyGroup.add(scarfCollar);
+
+    // 3. The Sisyphean Burden — Chained Runic Boulder Backpack on Back (-X)
+    const boulderPackGroup = new THREE.Group();
+    boulderPackGroup.position.set(-0.25, 0.58, 0);
+
+    const boulderCore = new THREE.Mesh(unitBoxGeo, boulderStoneMat);
+    boulderCore.scale.set(0.28, 0.34, 0.34);
+    boulderPackGroup.add(boulderCore);
+
+    const boulderBevel = new THREE.Mesh(unitBoxGeo, boulderInnerMat);
+    boulderBevel.scale.set(0.34, 0.26, 0.26);
+    boulderPackGroup.add(boulderBevel);
+
+    const boulderCap = new THREE.Mesh(unitBoxGeo, boulderInnerMat);
+    boulderCap.scale.set(0.22, 0.4, 0.24);
+    boulderPackGroup.add(boulderCap);
+
+    // Glowing Runic Veins carved into the Boulder Pack
+    const boulderRuneV = new THREE.Mesh(unitBoxGeo, coreGlowMat);
+    boulderRuneV.scale.set(0.35, 0.22, 0.05);
+    boulderPackGroup.add(boulderRuneV);
+
+    const boulderRuneH = new THREE.Mesh(unitBoxGeo, coreGlowMat);
+    boulderRuneH.scale.set(0.35, 0.05, 0.22);
+    boulderPackGroup.add(boulderRuneH);
+
+    // Iron Binding Straps securing the boulder to the climber
+    const strapTop = new THREE.Mesh(unitBoxGeo, goldTrimMat);
+    strapTop.scale.set(0.32, 0.04, 0.36);
+    strapTop.position.set(0.04, 0.1, 0);
+    boulderPackGroup.add(strapTop);
+    vesselBodyGroup.add(boulderPackGroup);
+
+    // 4. Flowing Block-Art Wanderer Cloak Tails
+    const buildCloakTail = (sideZ: number) => {
+      const tailGroup = new THREE.Group();
+      tailGroup.position.set(-0.16, 0.64, sideZ);
+      const upperTail = new THREE.Mesh(unitBoxGeo, cloakFabricMat);
+      upperTail.scale.set(0.05, 0.26, 0.11);
+      upperTail.position.set(-0.04, -0.12, 0);
+      tailGroup.add(upperTail);
+      const lowerTip = new THREE.Mesh(unitBoxGeo, goldTrimMat);
+      lowerTip.scale.set(0.05, 0.08, 0.11);
+      lowerTip.position.set(-0.05, -0.27, 0);
+      tailGroup.add(lowerTip);
+      return tailGroup;
+    };
+    const shardL = buildCloakTail(-0.12);
+    const shardR = buildCloakTail(0.12);
     vesselBodyGroup.add(shardL);
-
-    const shardR = new THREE.Mesh(unitBoxGeo, potRimMat);
-    shardR.scale.set(0.18, 0.22, 0.1);
-    shardR.position.set(0, 0.58, 0.26);
     vesselBodyGroup.add(shardR);
 
-    const hammerPivot = new THREE.Group();
-    hammerPivot.position.set(0, 0.58, 0);
-    const shaftMat = new THREE.MeshStandardMaterial({
-      color: 0x78350f,
-      roughness: 0.7,
+    // 5. Sculpted Block-Art Wayfarer Helm & Glowing Eyes
+    const headGroup = new THREE.Group();
+    headGroup.position.set(0.03, 0.81, 0);
+
+    const faceBlock = new THREE.Mesh(unitBoxGeo, bootDarkMat);
+    faceBlock.scale.set(0.24, 0.22, 0.24);
+    headGroup.add(faceBlock);
+
+    // Glowing Voxel Eyes on +X front face
+    const eyeL = new THREE.Mesh(unitBoxGeo, coreGlowMat);
+    eyeL.scale.set(0.04, 0.045, 0.055);
+    eyeL.position.set(0.115, 0.01, -0.055);
+    headGroup.add(eyeL);
+
+    const eyeR = new THREE.Mesh(unitBoxGeo, coreGlowMat);
+    eyeR.scale.set(0.04, 0.045, 0.055);
+    eyeR.position.set(0.115, 0.01, 0.055);
+    headGroup.add(eyeR);
+
+    // Armored Wayfarer Hood / Helm Crown
+    const helmCrown = new THREE.Mesh(unitBoxGeo, armorSlateMat);
+    helmCrown.scale.set(0.28, 0.1, 0.28);
+    helmCrown.position.set(-0.01, 0.1, 0);
+    headGroup.add(helmCrown);
+
+    const helmBack = new THREE.Mesh(unitBoxGeo, armorSlateMat);
+    helmBack.scale.set(0.1, 0.22, 0.28);
+    helmBack.position.set(-0.1, 0.0, 0);
+    headGroup.add(helmBack);
+
+    const helmBrow = new THREE.Mesh(unitBoxGeo, goldTrimMat);
+    helmBrow.scale.set(0.06, 0.045, 0.29);
+    helmBrow.position.set(0.12, 0.065, 0);
+    headGroup.add(helmBrow);
+
+    // Central Crest Plume & Winged Side Horns (Voxel Knight / Wayfarer silhouette)
+    const haloRing = new THREE.Mesh(unitBoxGeo, goldTrimMat);
+    haloRing.scale.set(0.22, 0.08, 0.06);
+    haloRing.position.set(0.0, 0.17, 0);
+    headGroup.add(haloRing);
+
+    [-0.16, 0.16].forEach((hz) => {
+      const hornBase = new THREE.Mesh(unitBoxGeo, goldTrimMat);
+      hornBase.scale.set(0.08, 0.08, 0.06);
+      hornBase.position.set(0.0, 0.06, hz);
+      headGroup.add(hornBase);
+      const hornTip = new THREE.Mesh(unitBoxGeo, steelBladeMat);
+      hornTip.scale.set(0.07, 0.14, 0.05);
+      hornTip.position.set(-0.03, 0.15, hz * 1.15);
+      hornTip.rotation.z = 0.25;
+      headGroup.add(hornTip);
     });
-    const shaftMesh = new THREE.Mesh(unitBoxGeo, shaftMat);
-    shaftMesh.scale.set(0.07, 0.88, 0.07);
-    shaftMesh.position.set(0.22, 0.18, 0.26);
-    shaftMesh.rotation.z = -0.35;
+    vesselBodyGroup.add(headGroup);
+
+    // 6. Articulated Left & Right Arms + Twin-Spiked Climbing Great-Pick
+    const armLGroup = new THREE.Group();
+    armLGroup.position.set(0.0, 0.6, -0.23);
+    const pauldronL = new THREE.Mesh(unitBoxGeo, armorSlateMat);
+    pauldronL.scale.set(0.16, 0.12, 0.12);
+    armLGroup.add(pauldronL);
+    const forearmL = new THREE.Mesh(unitBoxGeo, bodySkinMat);
+    forearmL.scale.set(0.12, 0.18, 0.1);
+    forearmL.position.set(0.02, -0.12, 0);
+    armLGroup.add(forearmL);
+    const gauntletL = new THREE.Mesh(unitBoxGeo, bootDarkMat);
+    gauntletL.scale.set(0.13, 0.09, 0.11);
+    gauntletL.position.set(0.03, -0.22, 0);
+    armLGroup.add(gauntletL);
+    vesselBodyGroup.add(armLGroup);
+
+    const hammerPivot = new THREE.Group();
+    hammerPivot.position.set(0.0, 0.6, 0.23);
+    const pauldronR = new THREE.Mesh(unitBoxGeo, armorSlateMat);
+    pauldronR.scale.set(0.16, 0.12, 0.12);
+    hammerPivot.add(pauldronR);
+    const forearmR = new THREE.Mesh(unitBoxGeo, bodySkinMat);
+    forearmR.scale.set(0.12, 0.18, 0.1);
+    forearmR.position.set(0.04, -0.12, 0);
+    hammerPivot.add(forearmR);
+    const gauntletR = new THREE.Mesh(unitBoxGeo, bootDarkMat);
+    gauntletR.scale.set(0.13, 0.09, 0.11);
+    gauntletR.position.set(0.06, -0.22, 0);
+    hammerPivot.add(gauntletR);
+
+    // Climber's Twin-Spiked Great-Pick / Alpenstock held in Right Gauntlet
+    const shaftMesh = new THREE.Mesh(unitBoxGeo, leatherStrapMat);
+    shaftMesh.scale.set(0.055, 0.86, 0.055);
+    shaftMesh.position.set(0.18, 0.06, 0.02);
+    shaftMesh.rotation.z = -0.32;
     hammerPivot.add(shaftMesh);
 
-    const malletHead = new THREE.Mesh(unitBoxGeo, potRimMat);
-    malletHead.scale.set(0.34, 0.18, 0.22);
-    malletHead.position.set(0.38, 0.58, 0.26);
-    hammerPivot.add(malletHead);
+    const pickCollar = new THREE.Mesh(unitBoxGeo, goldTrimMat);
+    pickCollar.scale.set(0.12, 0.1, 0.1);
+    pickCollar.position.set(0.3, 0.42, 0.02);
+    pickCollar.rotation.z = -0.32;
+    hammerPivot.add(pickCollar);
+
+    const pickBladeFront = new THREE.Mesh(unitBoxGeo, steelBladeMat);
+    pickBladeFront.scale.set(0.28, 0.055, 0.06);
+    pickBladeFront.position.set(0.41, 0.39, 0.02);
+    pickBladeFront.rotation.z = -0.52;
+    hammerPivot.add(pickBladeFront);
+
+    const pickBladeBack = new THREE.Mesh(unitBoxGeo, steelBladeMat);
+    pickBladeBack.scale.set(0.18, 0.05, 0.06);
+    pickBladeBack.position.set(0.2, 0.45, 0.02);
+    pickBladeBack.rotation.z = -0.12;
+    hammerPivot.add(pickBladeBack);
+
     vesselBodyGroup.add(hammerPivot);
 
     playerGroup.add(vesselBodyGroup);
@@ -1340,20 +1610,24 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
 
       const skin = playerSkinRef.current;
       if (skin === 'cauldron') {
-        bodySkinMat.color.setHex(0xd6d3d1);
-        coreGlowMat.color.setHex(0xf97316);
-        coreGlowMat.emissive.setHex(0xea580c);
+        bodySkinMat.color.setHex(0xc2410c);
+        cloakFabricMat.color.setHex(0xea580c);
+        coreGlowMat.color.setHex(0x38bdf8);
+        coreGlowMat.emissive.setHex(0x0284c7);
       } else if (skin === 'frog') {
-        bodySkinMat.color.setHex(0x10b981);
+        bodySkinMat.color.setHex(0x059669);
+        cloakFabricMat.color.setHex(0x10b981);
         coreGlowMat.color.setHex(0x6ee7b7);
         coreGlowMat.emissive.setHex(0x059669);
       } else if (skin === 'astronaut') {
-        bodySkinMat.color.setHex(0x6366f1);
+        bodySkinMat.color.setHex(0x4f46e5);
+        cloakFabricMat.color.setHex(0x6366f1);
         coreGlowMat.color.setHex(0x38bdf8);
         coreGlowMat.emissive.setHex(0x0284c7);
       } else {
-        bodySkinMat.color.setHex(0xfef3c7);
-        coreGlowMat.color.setHex(0xfacc15);
+        bodySkinMat.color.setHex(0xd97706);
+        cloakFabricMat.color.setHex(0xf59e0b);
+        coreGlowMat.color.setHex(0xfef08a);
         coreGlowMat.emissive.setHex(0xd97706);
       }
 
@@ -1362,17 +1636,18 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
       if (mode === 'title') {
         simTimeRef.current += frameDt;
         const tourT = simTimeRef.current * 0.35;
-        const sampleIdx = Math.floor(((Math.sin(tourT) + 1) * 0.5) * 4);
-        const targetStep = LEVELS_500[sampleIdx] || LEVELS_500[0];
-        _vec3A.set(targetStep.x, targetStep.y + 1.0, targetStep.z);
+        const sampleIdx = Math.floor(((Math.sin(tourT) + 1) * 0.5) * 3);
+        const targetStep =
+          sampleIdx === 0
+            ? GROUND_STEP_META
+            : LEVELS_500[sampleIdx - 1] || LEVELS_500[0];
+        _vec3A.set(targetStep.x, targetStep.y + 1.1, targetStep.z);
         camTarget.lerp(_vec3A, 1 - Math.exp(-3.5 * frameDt));
 
-        const orbitAngle = Math.PI * 0.25 + Math.sin(tourT * 0.7) * 0.2;
-        const dist = 21.0;
         camera.position.set(
-          camTarget.x + Math.cos(orbitAngle) * dist,
-          camTarget.y + 16.0,
-          camTarget.z + Math.sin(orbitAngle) * dist
+          camTarget.x + isoOffset.x,
+          camTarget.y + isoOffset.y,
+          camTarget.z + isoOffset.z
         );
         camera.lookAt(camTarget);
       } else if (mode === 'playing') {
@@ -1405,9 +1680,11 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
         }
 
         const activeStep =
-          LEVELS_500[
-            Math.max(0, Math.min(TOTAL_LEVELS - 1, p.currentStep - 1))
-          ];
+          p.currentStep <= 0
+            ? GROUND_STEP_META
+            : LEVELS_500[
+                Math.max(0, Math.min(TOTAL_LEVELS - 1, p.currentStep - 1))
+              ];
         const holdingCharge =
           spaceHeld || pointerDownHeld || touchChargingRef.current;
 
@@ -1681,31 +1958,71 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
 
       playerGroup.position.set(p.x, p.y, p.z);
       vesselBodyGroup.rotation.y = -p.aimAngle;
-      vesselBodyGroup.rotation.z = p.isTumbling ? p.tumbleSpin : 0;
+      vesselBodyGroup.rotation.z = p.isTumbling
+        ? p.tumbleSpin
+        : p.isCharging
+        ? -p.chargeRatio * 0.16
+        : 0;
       vesselBodyGroup.rotation.x = p.isTumbling ? p.tumbleSpin * 0.6 : 0;
+      vesselBodyGroup.position.y = p.isCharging ? -p.chargeRatio * 0.1 : 0;
       vesselBodyGroup.scale.set(
         squashXRef.current,
         squashYRef.current,
         squashXRef.current
       );
 
-      haloRing.rotation.y = simTimeRef.current * 2.6;
-      const shardBob =
-        p.isCharging || !p.grounded
-          ? Math.sin(simTimeRef.current * 22) * 0.35
-          : Math.sin(simTimeRef.current * 3) * 0.08;
-      shardL.rotation.x = shardBob;
-      shardR.rotation.x = -shardBob;
+      // Articulated Limb & Cloak Procedural Animation
+      const groundSpeed = Math.hypot(p.vx, p.vz);
+      const walkCycle =
+        p.grounded && groundSpeed > 0.12
+          ? Math.sin(simTimeRef.current * 15) *
+            Math.min(0.65, groundSpeed * 0.25)
+          : 0;
 
-      hammerPivot.rotation.z = p.isCharging ? -p.chargeRatio * 0.92 : 0;
+      if (!p.grounded) {
+        legLGroup.rotation.z = 0.48;
+        legRGroup.rotation.z = -0.38;
+        armLGroup.rotation.z = -0.55;
+      } else if (p.isCharging) {
+        legLGroup.rotation.z = -p.chargeRatio * 0.35;
+        legRGroup.rotation.z = p.chargeRatio * 0.35;
+        armLGroup.rotation.z = -p.chargeRatio * 0.45;
+      } else {
+        legLGroup.rotation.z = walkCycle;
+        legRGroup.rotation.z = -walkCycle;
+        armLGroup.rotation.z = -walkCycle * 0.8;
+      }
+
+      coreGlowMat.emissiveIntensity = p.isCharging
+        ? 1.5 + p.chargeRatio * 1.8
+        : 1.35;
+
+      const cloakFlutter =
+        p.isCharging || !p.grounded
+          ? 0.35 + Math.sin(simTimeRef.current * 20) * 0.22
+          : 0.08 + Math.sin(simTimeRef.current * 4) * 0.06 + groundSpeed * 0.08;
+      shardL.rotation.z = cloakFlutter;
+      shardR.rotation.z =
+        cloakFlutter + Math.cos(simTimeRef.current * 6) * 0.05;
+
+      hammerPivot.rotation.z = p.isCharging
+        ? p.chargeRatio * 0.95
+        : !p.grounded
+        ? -0.45
+        : walkCycle * 0.7;
       contactShadowMesh.visible = p.grounded;
 
       // Update 3D Next-Step Waypoint Beacon + Predicted Landing Target Ring!
       const nextStepObj =
-        LEVELS_500[Math.min(TOTAL_LEVELS - 1, p.currentStep)] || LEVELS_500[0];
+        LEVELS_500[Math.max(0, Math.min(TOTAL_LEVELS - 1, p.currentStep))] ||
+        LEVELS_500[0];
       const nextRt = getStepRuntimeOffset(nextStepObj, simTimeRef.current, 0);
 
-      if (mode === 'playing' && p.currentStep < TOTAL_LEVELS && !nextRt.collapsed) {
+      if (
+        mode === 'playing' &&
+        p.currentStep < TOTAL_LEVELS &&
+        !nextRt.collapsed
+      ) {
         nextStepBeaconGroup.visible = true;
         nextStepBeaconGroup.position.set(
           nextStepObj.x + nextRt.offsetX,
@@ -1721,9 +2038,11 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
       }
 
       const curStepObj =
-        LEVELS_500[
-          Math.max(0, Math.min(TOTAL_LEVELS - 1, p.currentStep - 1))
-        ] || LEVELS_500[0];
+        p.currentStep <= 0
+          ? GROUND_STEP_META
+          : LEVELS_500[
+              Math.max(0, Math.min(TOTAL_LEVELS - 1, p.currentStep - 1))
+            ] || LEVELS_500[0];
       const alignInfo = computeAimAlignment(
         p.grounded ? p.x : curStepObj.x,
         p.grounded ? p.y : curStepObj.y,
@@ -1843,11 +2162,16 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
       hudSyncTimer += frameDt;
       if (hudSyncTimer >= 0.06) {
         hudSyncTimer = 0;
-        const stepIdx = Math.max(
-          0,
-          Math.min(TOTAL_LEVELS - 1, p.currentStep - 1)
+        const activeMeta =
+          p.currentStep <= 0
+            ? GROUND_STEP_META
+            : LEVELS_500[
+                Math.max(0, Math.min(TOTAL_LEVELS - 1, p.currentStep - 1))
+              ];
+        const wind = getLiveWindVector(
+          simTimeRef.current,
+          Math.max(1, p.currentStep)
         );
-        const wind = getLiveWindVector(simTimeRef.current, p.currentStep);
         onTelemetryRef.current({
           currentStep: p.currentStep,
           peakStep: p.peakStep,
@@ -1865,14 +2189,14 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
           idealChargePercent: alignInfo.idealChargePercent,
           angleErrorDeg: alignInfo.angleErrorDeg,
           isAimAligned: alignInfo.isAimAligned,
-          altitude: Math.round(p.y * 10) / 10,
+          altitude: Math.max(0, Math.round((p.y - GROUND_FLOOR_Y) * 10) / 10),
           elapsedSeconds: Math.floor(simTimeRef.current),
           spireSeed: currentSpireSeed,
           spireMutations: p.spireMutations,
           windLabel: wind.compassLabel,
           windStrength: wind.strength,
           windAngleRad: wind.angleRad,
-          activeStepMeta: LEVELS_500[stepIdx],
+          activeStepMeta: activeMeta,
           taunt: latestTauntRef.current,
           won: p.won,
         });
