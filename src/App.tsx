@@ -3,60 +3,111 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  GameShellState,
+  CHARACTER_OUTFITS,
+  ClimberSkinId,
   IsometricCanvas,
-  TelemetryUpdate,
+  TelemetryPayload,
 } from './components/IsometricCanvas';
-import { BlueprintModal } from './components/BlueprintModal';
-import { LeaderboardModal } from './components/LeaderboardModal';
 import {
+  AtmosphericLayerId,
   BIOME_BLUEPRINTS,
-  DEFAULT_SPIRE_SEED,
   GROUND_STEP_META,
-  LEVELS_500,
+  NpcDialogueChoice,
   PHILOSOPHICAL_ENDING_QUOTE,
   TOTAL_LEVELS,
+  TrailNpcData,
   currentSpireSeed,
   reseedLevels500,
 } from './game/levels';
-import { soundEngine } from './game/audio';
 import {
-  ClimberSkin,
-  User,
-  auth,
-  onAuthStateChanged,
-  syncFirestoreLeaderboardEntry,
-} from './firebase';
+  CAMERA_ANGLE_PRESETS,
+  CAMERA_MODES_ORDER,
+  CAMERA_SHIFT_INTERVAL_STEPS,
+  CameraAngleMode,
+  createInitialPlayerState,
+  getAltitudeAwareNpcDialogue,
+  getAutoCameraModeForStep,
+} from './game/rules';
+import { soundEngine } from './game/audio';
 
-const INITIAL_TELEMETRY: TelemetryUpdate = {
+type GameShellState = 'title' | 'playing' | 'paused' | 'gameover';
+
+const ATMOSPHERIC_LAYER_LABELS: Record<
+  AtmosphericLayerId,
+  { badge: string; colorClass: string }
+> = {
+  troposphere_valley: {
+    badge: 'TROPOSPHERE VALLEY',
+    colorClass: 'bg-emerald-950/85 text-emerald-300 border-emerald-500/40',
+  },
+  alpine_cloud_deck: {
+    badge: 'ALPINE CLOUD SEA',
+    colorClass: 'bg-sky-950/85 text-sky-200 border-sky-400/40',
+  },
+  stratosphere: {
+    badge: 'STRATOSPHERE (100+)',
+    colorClass: 'bg-indigo-950/90 text-indigo-200 border-indigo-400/50',
+  },
+  thermosphere_aurora: {
+    badge: 'THERMOSPHERE AURORA',
+    colorClass: 'bg-purple-950/90 text-purple-200 border-purple-400/50',
+  },
+  deep_space: {
+    badge: 'EXOSPHERE · DEEP SPACE',
+    colorClass: 'bg-slate-950/95 text-amber-200 border-amber-400/60',
+  },
+};
+
+const INITIAL_TELEMETRY: TelemetryPayload = {
   currentStep: 0,
   peakStep: 0,
   fallsCount: 0,
   biggestFallLoss: 0,
   rageScore: 0,
-  coinsCollected: 0,
   chargeRatio: 0,
-  chargeHoldTime: 0,
-  isOvercharging: false,
-  isOnTarget: false,
   isCharging: false,
-  isTumbling: false,
+  grounded: true,
+  inRiverWater: false,
+  onRiverBridge: false,
+  biomeIndex: 1,
+  biomeName: BIOME_BLUEPRINTS[0].name,
+  biomeSubtitle: BIOME_BLUEPRINTS[0].subtitle,
+  biomeColor: BIOME_BLUEPRINTS[0].themeColor,
+  atmosphericLayer: 'troposphere_valley',
+  stepTitle: GROUND_STEP_META.title,
+  stepTrapText: GROUND_STEP_META.psychologicalTrap,
+  stepDifficulty: 1,
+  hazardType: 'none',
+  surfaceTheme: 'sanctuary',
+  crumbleWarning: 0,
   glitchActive: false,
-  idealChargePercent: 62,
-  angleErrorDeg: 0,
-  isAimAligned: true,
-  altitude: 0,
-  elapsedSeconds: 0,
-  spireSeed: DEFAULT_SPIRE_SEED,
-  spireMutations: 0,
-  windLabel: 'CALM',
-  windStrength: 0,
-  windAngleRad: 0,
-  activeStepMeta: GROUND_STEP_META,
-  taunt: null,
   won: false,
+  aimErrorDeg: 0,
+  isAimAligned: true,
+  idealChargePercent: 60,
+  clearGapMeters: 1.25,
+  vertRiseMeters: 0.82,
+  turnAngleDeg: 0,
+  liveWind: {
+    windX: 0,
+    windZ: 0,
+    strength: 0,
+    angleRad: 0,
+    label: 'CALM',
+    compassLabel: 'CALM',
+  },
+  spireMutations: 0,
+  nearbyNpc: GROUND_STEP_META.npc || null,
+  nearbyNpcStep: 0,
+  nearbyNpcBark: null,
+  nearbyNpcBlocking: false,
+  activeRuneCount: 0,
+  totalRuneCount: 0,
+  stepGateUnlocked: true,
+  cameraMode: 'isometric',
+  nextCameraShiftStep: CAMERA_SHIFT_INTERVAL_STEPS,
 };
 
 declare global {
@@ -64,170 +115,196 @@ declare global {
     __GAME_DEBUG__?: {
       warpToStep: (step: number) => void;
       rerollSeed: (seed?: number) => number;
-      getTelemetry: () => TelemetryUpdate;
+      getTelemetry: () => TelemetryPayload;
+      setCameraMode: (mode: CameraAngleMode) => void;
+      openNpcDialogue: () => void;
     };
   }
 }
 
 export default function App() {
-  const [shellState, setShellState] = useState<GameShellState>('title');
-  const [telemetry, setTelemetry] =
-    useState<TelemetryUpdate>(INITIAL_TELEMETRY);
-  const [finalSnapshot, setFinalSnapshot] =
-    useState<TelemetryUpdate>(INITIAL_TELEMETRY);
-  const [resetSignal, setResetSignal] = useState<number>(0);
-  const [seedSignal, setSeedSignal] = useState<number>(0);
-  const [activeSeed, setActiveSeed] = useState<number>(currentSpireSeed);
-  const [warpSignal, setWarpSignal] = useState<{ step: number; seq: number }>({
-    step: 1,
-    seq: 0,
+  const [shellState, setShellState] = useState<GameShellState>(() => {
+    const params = new URLSearchParams(window.location.search);
+    return params.get('autostart') === '1' ? 'playing' : 'title';
   });
+  const [telemetry, setTelemetry] =
+    useState<TelemetryPayload>(INITIAL_TELEMETRY);
+  const [finalSnapshot, setFinalSnapshot] =
+    useState<TelemetryPayload>(INITIAL_TELEMETRY);
+  const [cameraMode, setCameraMode] = useState<CameraAngleMode>('isometric');
+  const [vistaOverviewActive, setVistaOverviewActive] =
+    useState<boolean>(false);
+  const [resetSignal, setResetSignal] = useState<number>(0);
+  const [initialStartStep, setInitialStartStep] = useState<number>(0);
+  const [activeSeed, setActiveSeed] = useState<number>(currentSpireSeed);
 
-  // Modals & Audio state
-  const [blueprintOpen, setBlueprintOpen] = useState<boolean>(false);
-  const [leaderboardOpen, setLeaderboardOpen] = useState<boolean>(false);
+  // Toast / Subtitle banners for falls, camera shifts, and biome milestones
+  const [tauntBanner, setTauntBanner] = useState<{
+    quote: string;
+    author: string;
+    stepsLost: number;
+  } | null>(null);
+  const [milestoneBanner, setMilestoneBanner] = useState<{
+    stepNumber: number;
+    title: string;
+    subtitle: string;
+    color: string;
+  } | null>(null);
+
+  // Interactive NPC POV Conversation State
+  const [activeDialogueNpc, setActiveDialogueNpc] =
+    useState<TrailNpcData | null>(null);
+  const [selectedChoiceIdx, setSelectedChoiceIdx] = useState<number>(0);
+  const [npcReplyLine, setNpcReplyLine] = useState<string | null>(null);
+
   const [isMuted, setIsMuted] = useState<boolean>(false);
   const [copiedReceipt, setCopiedReceipt] = useState<boolean>(false);
 
-  // Mobile / Watch Touch Controls State
-  const [touchMoveDir, setTouchMoveDir] = useState<{ x: number; y: number }>({
-    x: 0,
-    y: 0,
-  });
-  const [touchCharging, setTouchCharging] = useState<boolean>(false);
-
-  // Player Identity & Firebase Auth State
-  const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
-  const [playerUid] = useState<string>(() => {
-    const saved = localStorage.getItem('sisyphus_uid');
-    if (saved) return saved;
-    const generated =
-      'climber-' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
-    localStorage.setItem('sisyphus_uid', generated);
-    return generated;
-  });
-  const [playerHandle, setPlayerHandle] = useState<string>(() => {
-    return localStorage.getItem('sisyphus_handle') || 'MonolithPilgrim';
-  });
-  const [playerSkin, setPlayerSkin] = useState<ClimberSkin>(() => {
-    const saved = localStorage.getItem('sisyphus_skin') as ClimberSkin;
-    return saved && ['chicken', 'cauldron', 'frog', 'astronaut'].includes(saved)
+  const [playerSkin, setPlayerSkin] = useState<ClimberSkinId>(() => {
+    const saved = localStorage.getItem('sisyphus_skin') as ClimberSkinId;
+    return saved && ['cauldron', 'frog', 'chicken', 'astronaut'].includes(saved)
       ? saved
       : 'cauldron';
   });
-  const [playerMotto, setPlayerMotto] = useState<string>(() => {
-    return (
-      localStorage.getItem('sisyphus_motto') ||
-      'The spire shifts, yet I keep vaulting.'
-    );
-  });
 
-  useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (u) => {
-      setFirebaseUser(u);
-      if (u?.displayName && playerHandle === 'MonolithPilgrim') {
-        const cleanName = u.displayName.slice(0, 24);
-        setPlayerHandle(cleanName);
-        localStorage.setItem('sisyphus_handle', cleanName);
-      }
-    });
-    return () => unsub();
-  }, [playerHandle]);
-
-  const handleUpdateProfile = useCallback(
-    (handle: string, skin: ClimberSkin, motto: string) => {
-      setPlayerHandle(handle);
-      setPlayerSkin(skin);
-      setPlayerMotto(motto);
-      localStorage.setItem('sisyphus_handle', handle);
-      localStorage.setItem('sisyphus_skin', skin);
-      localStorage.setItem('sisyphus_motto', motto);
-    },
-    []
+  const selectedOutfit = useMemo(
+    () =>
+      CHARACTER_OUTFITS.find((o) => o.id === playerSkin) ||
+      CHARACTER_OUTFITS[0],
+    [playerSkin]
   );
 
-  // Automatically post high-score progress to backend & Firestore when reaching new milestones or summit
-  const syncScoreSilently = useCallback(
-    async (snap: TelemetryUpdate) => {
-      const uid = firebaseUser ? firebaseUser.uid : playerUid;
-      const payload = {
-        uid,
-        handle: playerHandle,
-        avatarSkin: playerSkin,
-        tauntMotto: playerMotto,
-        peakStep: Math.max(1, Math.min(500, snap.peakStep)),
-        totalFalls: Math.max(0, snap.fallsCount),
-        worstFall: Math.max(0, snap.biggestFallLoss),
-        rageScore: Math.max(0, snap.rageScore),
-      };
-      try {
-        await fetch('/api/leaderboard', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-        });
-        if (firebaseUser) {
-          await syncFirestoreLeaderboardEntry(payload);
-        }
-      } catch {
-        // Ignore background sync errors during active gameplay
-      }
-    },
-    [firebaseUser, playerUid, playerHandle, playerSkin, playerMotto]
-  );
+  const handleSelectSkin = useCallback((skin: ClimberSkinId) => {
+    setPlayerSkin(skin);
+    localStorage.setItem('sisyphus_skin', skin);
+    soundEngine.playChargeTick(0.65);
+  }, []);
 
-  // Sync body[data-state] attribute
   useEffect(() => {
     document.body.dataset.state = shellState;
   }, [shellState]);
 
-  const handleRerollSpireSeed = useCallback(
-    (customSeed?: number, e?: React.MouseEvent<HTMLButtonElement>) => {
-      if (e) e.currentTarget.blur();
-      const nextSeed =
-        typeof customSeed === 'number'
-          ? customSeed
-          : Math.floor(100000 + Math.random() * 899999);
-      reseedLevels500(nextSeed);
-      setActiveSeed(nextSeed);
-      setSeedSignal((s) => s + 1);
-      setResetSignal((r) => r + 1);
-      soundEngine.playGlitchZap();
+  const handleTelemetryUpdate = useCallback((payload: TelemetryPayload) => {
+    setTelemetry(payload);
+    if (payload.won) {
+      setFinalSnapshot(payload);
+      setShellState('gameover');
+    }
+  }, []);
+
+  const handleTauntTriggered = useCallback(
+    (quote: string, author: string, stepsLost: number) => {
+      setTauntBanner({ quote, author, stepsLost });
+      window.setTimeout(() => {
+        setTauntBanner((prev) => (prev?.quote === quote ? null : prev));
+      }, 5200);
     },
     []
   );
 
-  // Expose deterministic debug hook for automated verification
-  useEffect(() => {
-    window.__GAME_DEBUG__ = {
-      warpToStep: (step: number) => {
-        document.body.dataset.state =
-          step >= TOTAL_LEVELS ? 'gameover' : 'playing';
-        setShellState(step >= TOTAL_LEVELS ? 'gameover' : 'playing');
-        setWarpSignal((prev) => ({ step, seq: prev.seq + 1 }));
-      },
-      rerollSeed: (seed?: number) => {
-        const nextSeed =
-          typeof seed === 'number'
-            ? seed
-            : Math.floor(100000 + Math.random() * 899999);
-        reseedLevels500(nextSeed);
-        setActiveSeed(nextSeed);
-        setSeedSignal((s) => s + 1);
-        setResetSignal((r) => r + 1);
-        return nextSeed;
-      },
-      getTelemetry: () => telemetry,
-    };
-  }, [telemetry]);
+  const handleMilestoneReached = useCallback(
+    (
+      stepNumber: number,
+      biomeName: string,
+      subtitle: string,
+      themeColor: string
+    ) => {
+      setMilestoneBanner({
+        stepNumber,
+        title: biomeName,
+        subtitle,
+        color: themeColor,
+      });
+      window.setTimeout(() => {
+        setMilestoneBanner((prev) =>
+          prev?.stepNumber === stepNumber ? null : prev
+        );
+      }, 4200);
+    },
+    []
+  );
+
+  const handleAutoCameraShift = useCallback(
+    (newMode: CameraAngleMode, stepNumber: number) => {
+      setCameraMode(newMode);
+      if (stepNumber > 0) {
+        const preset = CAMERA_ANGLE_PRESETS[newMode];
+        setMilestoneBanner({
+          stepNumber,
+          title: `Perspective Shift · Stage ${stepNumber}`,
+          subtitle: `Camera rotated to ${preset.label}`,
+          color: '#38bdf8',
+        });
+        window.setTimeout(() => {
+          setMilestoneBanner((prev) =>
+            prev?.stepNumber === stepNumber ? null : prev
+          );
+        }, 3600);
+      }
+    },
+    []
+  );
+
+  const cycleCameraAngle = useCallback(
+    (e?: React.MouseEvent<HTMLButtonElement>) => {
+      if (e) e.currentTarget.blur();
+      setCameraMode((prev) => {
+        const idx = CAMERA_MODES_ORDER.indexOf(prev);
+        return CAMERA_MODES_ORDER[(idx + 1) % CAMERA_MODES_ORDER.length];
+      });
+    },
+    []
+  );
+
+  const handleOpenNpcDialogue = useCallback((npc: TrailNpcData) => {
+    setActiveDialogueNpc(npc);
+    setSelectedChoiceIdx(0);
+    setNpcReplyLine(null);
+  }, []);
+
+  const activeDialogueContext = useMemo(() => {
+    if (!activeDialogueNpc) return null;
+    const synthState = createInitialPlayerState(telemetry.currentStep);
+    synthState.peakStep = telemetry.peakStep;
+    synthState.fallsCount = telemetry.fallsCount;
+    if (!telemetry.nearbyNpcBlocking) {
+      synthState.clearedNpcSteps = [telemetry.currentStep];
+    }
+    return getAltitudeAwareNpcDialogue(activeDialogueNpc, synthState, 0);
+  }, [
+    activeDialogueNpc,
+    telemetry.currentStep,
+    telemetry.peakStep,
+    telemetry.fallsCount,
+    telemetry.nearbyNpcBlocking,
+  ]);
+
+  const handleSelectDialogueChoice = useCallback(
+    (choice: NpcDialogueChoice) => {
+      setNpcReplyLine(choice.response);
+      if (choice.action === 'clear_path') {
+        const hooks = (
+          window as unknown as {
+            __gameTestHooks?: { clearCurrentStepNpc?: () => void };
+          }
+        ).__gameTestHooks;
+        hooks?.clearCurrentStepNpc?.();
+      } else if (choice.action === 'close') {
+        setActiveDialogueNpc(null);
+        setNpcReplyLine(null);
+      }
+    },
+    []
+  );
 
   const handleStartGame = useCallback(
     (e?: React.MouseEvent<HTMLButtonElement>) => {
       if (e) e.currentTarget.blur();
       soundEngine.startMusicLoop();
       document.body.dataset.state = 'playing';
-      setBlueprintOpen(false);
-      setLeaderboardOpen(false);
+      setActiveDialogueNpc(null);
+      setInitialStartStep(0);
+      setCameraMode('isometric');
       setResetSignal((n) => n + 1);
       setShellState('playing');
     },
@@ -239,22 +316,13 @@ export default function App() {
       if (e) e.currentTarget.blur();
       soundEngine.startMusicLoop();
       document.body.dataset.state = 'playing';
-      setBlueprintOpen(false);
-      setLeaderboardOpen(false);
+      setActiveDialogueNpc(null);
+      setInitialStartStep(0);
+      setCameraMode('isometric');
       setResetSignal((n) => n + 1);
       setShellState('playing');
     },
     []
-  );
-
-  const handleReachSummit = useCallback(
-    (finalSnap: TelemetryUpdate) => {
-      document.body.dataset.state = 'gameover';
-      setFinalSnapshot(finalSnap);
-      setShellState('gameover');
-      syncScoreSilently(finalSnap);
-    },
-    [syncScoreSilently]
   );
 
   const handleRetireAttempt = useCallback(
@@ -263,30 +331,49 @@ export default function App() {
       document.body.dataset.state = 'gameover';
       setFinalSnapshot(telemetry);
       setShellState('gameover');
-      syncScoreSilently(telemetry);
     },
-    [telemetry, syncScoreSilently]
+    [telemetry]
   );
 
-  const handlePracticeStep = useCallback((stepNumber: number) => {
-    soundEngine.startMusicLoop();
-    setBlueprintOpen(false);
-    setLeaderboardOpen(false);
-    if (stepNumber < TOTAL_LEVELS) {
-      document.body.dataset.state = 'playing';
-      setShellState('playing');
-    }
-    setWarpSignal((prev) => ({ step: stepNumber, seq: prev.seq + 1 }));
+  const toggleMute = useCallback((e?: React.MouseEvent<HTMLButtonElement>) => {
+    if (e) e.currentTarget.blur();
+    soundEngine.muted = !soundEngine.muted;
+    setIsMuted(soundEngine.muted);
   }, []);
 
-  const toggleMute = useCallback(
-    (e?: React.MouseEvent<HTMLButtonElement>) => {
-      if (e) e.currentTarget.blur();
-      soundEngine.muted = !soundEngine.muted;
-      setIsMuted(soundEngine.muted);
-    },
-    []
-  );
+  useEffect(() => {
+    window.__GAME_DEBUG__ = {
+      warpToStep: (step: number) => {
+        document.body.dataset.state =
+          step >= TOTAL_LEVELS ? 'gameover' : 'playing';
+        setShellState(step >= TOTAL_LEVELS ? 'gameover' : 'playing');
+        setInitialStartStep(step);
+        setCameraMode(getAutoCameraModeForStep(step));
+        const hooks = (
+          window as unknown as {
+            __gameTestHooks?: { teleportToStep?: (s: number) => void };
+          }
+        ).__gameTestHooks;
+        hooks?.teleportToStep?.(step);
+      },
+      rerollSeed: (seed?: number) => {
+        const nextSeed =
+          typeof seed === 'number'
+            ? seed
+            : Math.floor(100000 + Math.random() * 899999);
+        reseedLevels500(nextSeed);
+        setActiveSeed(nextSeed);
+        setResetSignal((r) => r + 1);
+        return nextSeed;
+      },
+      getTelemetry: () => telemetry,
+      setCameraMode: (mode: CameraAngleMode) => setCameraMode(mode),
+      openNpcDialogue: () => {
+        const npc = telemetry.nearbyNpc || GROUND_STEP_META.npc;
+        if (npc) handleOpenNpcDialogue(npc);
+      },
+    };
+  }, [telemetry, handleOpenNpcDialogue]);
 
   // Global keyboard shortcuts
   useEffect(() => {
@@ -298,7 +385,40 @@ export default function App() {
         return;
       }
 
-      if (shellState === 'title' && !blueprintOpen && !leaderboardOpen) {
+      if (activeDialogueNpc && activeDialogueContext) {
+        const choicesList = activeDialogueContext.dynamicChoices;
+        if (e.code === 'Escape') {
+          e.preventDefault();
+          setActiveDialogueNpc(null);
+          setNpcReplyLine(null);
+          return;
+        }
+        if (e.code === 'ArrowDown' || e.code === 'KeyS') {
+          e.preventDefault();
+          setSelectedChoiceIdx((i) => (i + 1) % choicesList.length);
+          return;
+        }
+        if (e.code === 'ArrowUp' || e.code === 'KeyW') {
+          e.preventDefault();
+          setSelectedChoiceIdx(
+            (i) => (i - 1 + choicesList.length) % choicesList.length
+          );
+          return;
+        }
+        if (e.code === 'Enter') {
+          e.preventDefault();
+          handleSelectDialogueChoice(
+            choicesList[selectedChoiceIdx] || choicesList[0]
+          );
+          return;
+        }
+      }
+
+      if (shellState === 'title') {
+        if (e.code === 'Digit1') handleSelectSkin('cauldron');
+        if (e.code === 'Digit2') handleSelectSkin('frog');
+        if (e.code === 'Digit3') handleSelectSkin('chicken');
+        if (e.code === 'Digit4') handleSelectSkin('astronaut');
         if (e.code === 'Enter' || e.code === 'Space') {
           e.preventDefault();
           handleStartGame();
@@ -307,20 +427,16 @@ export default function App() {
       }
 
       if (e.code === 'Escape') {
-        if (blueprintOpen) {
-          setBlueprintOpen(false);
-          return;
-        }
-        if (leaderboardOpen) {
-          setLeaderboardOpen(false);
-          return;
-        }
         if (shellState === 'playing') {
           setShellState('paused');
         } else if (shellState === 'paused') {
           setShellState('playing');
         }
-      } else if (e.code === 'KeyP' && !blueprintOpen && !leaderboardOpen) {
+      } else if (e.code === 'KeyC' && shellState === 'playing') {
+        cycleCameraAngle();
+      } else if (e.code === 'KeyV' && shellState === 'playing') {
+        setVistaOverviewActive((v) => !v);
+      } else if (e.code === 'KeyP') {
         if (shellState === 'playing') {
           setShellState('paused');
         } else if (shellState === 'paused') {
@@ -331,20 +447,6 @@ export default function App() {
         setIsMuted(soundEngine.muted);
       } else if (e.code === 'KeyR' && shellState === 'playing') {
         handleRestartClimb();
-      } else if (e.code === 'KeyG' && !blueprintOpen && !leaderboardOpen) {
-        handleRerollSpireSeed();
-      } else if (
-        e.code === 'KeyB' &&
-        (shellState === 'playing' || shellState === 'paused')
-      ) {
-        setLeaderboardOpen(false);
-        setBlueprintOpen((o) => !o);
-      } else if (
-        e.code === 'KeyL' &&
-        (shellState === 'playing' || shellState === 'paused')
-      ) {
-        setBlueprintOpen(false);
-        setLeaderboardOpen((o) => !o);
       }
     };
 
@@ -352,26 +454,28 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [
     shellState,
-    blueprintOpen,
-    leaderboardOpen,
+    activeDialogueNpc,
+    activeDialogueContext,
+    selectedChoiceIdx,
     handleStartGame,
     handleRestartClimb,
-    handleRerollSpireSeed,
+    cycleCameraAngle,
+    handleSelectDialogueChoice,
+    handleSelectSkin,
   ]);
 
   const handleCopyViralReceipt = () => {
     const src = shellState === 'gameover' ? finalSnapshot : telemetry;
     const text = [
-      '=== SISYPHEAN MONOLITH: 500 STEPS OF NOTHING ===',
-      `Pilgrim: ${playerHandle} · Seed #${activeSeed}`,
-      `Peak Monolith Reached: ${src.peakStep} / ${TOTAL_LEVELS}`,
-      `Total Falls: ${src.fallsCount} (Worst Single Drop: -${src.biggestFallLoss} Steps)`,
-      `Rage Index: ${src.rageScore}% · Spire Mutations: ${src.spireMutations}`,
+      '=== HAWK PEAK 500: SISYPHEAN MOUNTAIN HIKE ===',
+      `Trail Seed #${activeSeed} · Rig: ${selectedOutfit.name}`,
+      `Highest Stage Reached: ${src.peakStep} / ${TOTAL_LEVELS}`,
+      `Total Tumbles: ${src.fallsCount} (Worst Drop: -${src.biggestFallLoss} Stages)`,
       `Verdict: "${
         src.won
           ? PHILOSOPHICAL_ENDING_QUOTE
-          : src.taunt?.quote ||
-            'You tried to memorize a rhythm on a mountain that refuses to repeat itself.'
+          : tauntBanner?.quote ||
+            'Every stage is a puzzle, and gravity never forgets.'
       }"`,
     ].join('\n');
 
@@ -382,495 +486,441 @@ export default function App() {
     setTimeout(() => setCopiedReceipt(false), 2000);
   };
 
-  const activeBiome =
-    BIOME_BLUEPRINTS[(telemetry.activeStepMeta.biome || 1) - 1] ||
-    BIOME_BLUEPRINTS[0];
-
-  const nextStepMeta =
-    LEVELS_500[
-      Math.min(TOTAL_LEVELS - 1, Math.max(0, telemetry.currentStep))
-    ] || telemetry.activeStepMeta;
+  const activeCamPreset =
+    CAMERA_ANGLE_PRESETS[cameraMode] || CAMERA_ANGLE_PRESETS.isometric;
+  const atmoMeta =
+    ATMOSPHERIC_LAYER_LABELS[telemetry.atmosphericLayer] ||
+    ATMOSPHERIC_LAYER_LABELS.troposphere_valley;
 
   return (
-    <main className="relative w-screen h-screen overflow-hidden bg-[#283845] select-none">
-      {/* 1. Isolated 60fps Three.js Architectural Diorama Isometric Viewport */}
+    <main className="relative w-screen h-screen overflow-hidden bg-[#7ec8e3] select-none">
+      {/* 1. Studio-Grade 60fps Three.js Sculpted 3D Viewport */}
       <IsometricCanvas
-        shellState={shellState}
-        playerSkin={playerSkin}
+        onTelemetryUpdate={handleTelemetryUpdate}
+        onTauntTriggered={handleTauntTriggered}
+        onMilestoneReached={handleMilestoneReached}
+        onInteractNpc={handleOpenNpcDialogue}
+        onAutoCameraShift={handleAutoCameraShift}
+        activeDialogueNpc={activeDialogueNpc}
         resetSignal={resetSignal}
-        seedSignal={seedSignal}
-        warpStepSignal={warpSignal}
-        touchMoveDir={touchMoveDir}
-        touchCharging={touchCharging}
-        onTelemetryChange={setTelemetry}
-        onReachSummit={handleReachSummit}
+        selectedOutfit={selectedOutfit}
+        cameraPreset={cameraMode}
+        vistaOverviewActive={vistaOverviewActive}
+        isPaused={shellState === 'paused'}
+        isTitlePreview={shellState === 'title'}
+        initialStartStep={initialStartStep}
       />
 
-      {/* 2. TITLE SCREEN OVERLAY */}
+      {/* 2. FIVE-STAR GAME LOBBY TITLE SCREEN:
+          - Zero overlapping, non-scrollable, 85% open 3D hero stage
+          - Fancy Woodblock "HAWK PEAK 500" emblem (no second subtitle line, no Atlas, no Solo Ascent, no Coins/Leaderboard)
+          - Bottom bar holds the 4 selectable Hiker Outfits (no scrollbar) + Giant Golden PLAY HIKE CTA */}
       {shellState === 'title' && (
         <div
-          className="fixed inset-0 z-20 flex flex-col justify-between p-3 sm:p-6 md:p-10 pointer-events-none overflow-y-auto"
+          data-testid="title-screen-overlay"
+          className="fixed inset-0 z-20 flex flex-col justify-between p-3 sm:p-5 pointer-events-none overflow-hidden select-none"
           style={{
             background:
-              'linear-gradient(90deg, rgba(16,22,28,0.88) 0%, rgba(16,22,28,0.58) 54%, rgba(16,22,28,0.12) 100%)',
+              'radial-gradient(circle at 50% 45%, rgba(254,243,199,0.0) 0%, rgba(20,13,8,0.12) 68%, rgba(12,8,4,0.48) 100%)',
           }}
         >
-          <div className="max-w-xl my-auto space-y-4 sm:space-y-6 pointer-events-auto watch-compact-pad">
-            {/* Custom Inline SVG Architectural Monolith & Cauldron Pilgrim Lockup */}
-            <div className="space-y-2 sm:space-y-3">
+          {/* TOP BAR: FANCY "HAWK PEAK 500" EMBLEM (Left) & AUDIO TOGGLE (Right) */}
+          <div className="relative z-10 flex items-center justify-between gap-3 pointer-events-auto shrink-0">
+            <div className="flex items-center gap-3 min-w-0">
               <svg
-                viewBox="0 0 560 136"
-                className="w-full max-w-[510px] h-auto"
+                viewBox="0 0 478 68"
+                className="w-[248px] sm:w-[336px] md:w-[396px] h-auto drop-shadow-[0_6px_0_rgba(18,10,5,0.95)] shrink-0"
                 role="img"
-                aria-label="Sisyphean Monolith: 500 Steps of Nothing"
+                aria-label="Hawk Peak 500"
               >
-                {/* Sculpted Isometric Ground Trailhead + Block-Art Atlas Wayfarer Emblem */}
-                <g transform="translate(8, 10)">
-                  {/* Sanctuary Ground Plinth */}
+                <defs>
+                  <linearGradient
+                    id="hpTitleGold"
+                    x1="0%"
+                    y1="0%"
+                    x2="0%"
+                    y2="100%"
+                  >
+                    <stop offset="0%" stopColor="#fffdf2" />
+                    <stop offset="42%" stopColor="#fde047" />
+                    <stop offset="100%" stopColor="#ea580c" />
+                  </linearGradient>
+                  <linearGradient
+                    id="hpBadge500"
+                    x1="0%"
+                    y1="0%"
+                    x2="0%"
+                    y2="100%"
+                  >
+                    <stop offset="0%" stopColor="#fef08a" />
+                    <stop offset="50%" stopColor="#f59e0b" />
+                    <stop offset="100%" stopColor="#c2410c" />
+                  </linearGradient>
+                  <linearGradient
+                    id="hpCrestCrimson"
+                    x1="0%"
+                    y1="0%"
+                    x2="100%"
+                    y2="100%"
+                  >
+                    <stop offset="0%" stopColor="#fb7185" />
+                    <stop offset="50%" stopColor="#e11d48" />
+                    <stop offset="100%" stopColor="#881337" />
+                  </linearGradient>
+                </defs>
+
+                {/* Sculpted Mountain & Golden Hawk Crest Emblem */}
+                <g transform="translate(4, 6)">
                   <polygon
-                    points="46,66 88,84 46,102 4,84"
-                    fill="#52b788"
-                    stroke="#18181b"
-                    strokeWidth="3"
-                  />
-                  <polygon
-                    points="4,84 46,102 46,118 4,100"
-                    fill="#40916c"
-                    stroke="#18181b"
-                    strokeWidth="3"
-                  />
-                  <polygon
-                    points="88,84 46,102 46,118 88,100"
-                    fill="#2d6a4f"
-                    stroke="#18181b"
-                    strokeWidth="3"
-                  />
-                  {/* Chained Runic Boulder Backpack on Wayfarer's Back */}
-                  <rect
-                    x="14"
-                    y="24"
-                    width="20"
-                    height="24"
-                    fill="#292524"
-                    stroke="#18181b"
-                    strokeWidth="2.5"
-                  />
-                  <rect
-                    x="19"
-                    y="29"
-                    width="10"
-                    height="14"
-                    fill="#38bdf8"
-                    stroke="#18181b"
-                    strokeWidth="1.5"
-                  />
-                  {/* Flowing Crimson Cloak Tail */}
-                  <polygon
-                    points="22,46 10,64 24,62 28,48"
-                    fill="#ea580c"
-                    stroke="#18181b"
-                    strokeWidth="2.5"
-                  />
-                  {/* Articulated Block Boots */}
-                  <rect
-                    x="32"
-                    y="58"
-                    width="11"
-                    height="12"
-                    fill="#0f172a"
-                    stroke="#18181b"
-                    strokeWidth="2.5"
-                  />
-                  <rect
-                    x="47"
-                    y="58"
-                    width="11"
-                    height="12"
-                    fill="#0f172a"
-                    stroke="#18181b"
-                    strokeWidth="2.5"
-                  />
-                  {/* Armored Slate Cuirass & Crimson Tunic */}
-                  <rect
-                    x="30"
-                    y="32"
-                    width="28"
-                    height="26"
-                    fill="#1e293b"
-                    stroke="#18181b"
-                    strokeWidth="3"
-                  />
-                  <rect
-                    x="34"
-                    y="36"
-                    width="20"
-                    height="14"
-                    fill="#c2410c"
-                    stroke="#18181b"
-                    strokeWidth="2"
-                  />
-                  <rect
-                    x="30"
-                    y="50"
-                    width="28"
-                    height="5"
-                    fill="#f59e0b"
-                    stroke="#18181b"
-                    strokeWidth="2"
-                  />
-                  {/* Wayfarer Horned Helm & Glowing Cyan Voxel Eyes */}
-                  <rect
-                    x="32"
-                    y="12"
-                    width="24"
-                    height="20"
-                    fill="#0f172a"
-                    stroke="#18181b"
-                    strokeWidth="3"
-                  />
-                  <rect
-                    x="30"
-                    y="10"
-                    width="28"
-                    height="8"
-                    fill="#1e293b"
-                    stroke="#18181b"
-                    strokeWidth="2.5"
-                  />
-                  <rect
-                    x="40"
-                    y="4"
-                    width="8"
-                    height="7"
-                    fill="#f59e0b"
-                    stroke="#18181b"
-                    strokeWidth="2"
-                  />
-                  <rect
-                    x="39"
-                    y="20"
-                    width="5"
-                    height="4"
-                    fill="#38bdf8"
-                  />
-                  <rect
-                    x="48"
-                    y="20"
-                    width="5"
-                    height="4"
-                    fill="#38bdf8"
-                  />
-                  {/* Climber's Steel & Brass Pickaxe */}
-                  <line
-                    x1="64"
-                    y1="64"
-                    x2="72"
-                    y2="18"
-                    stroke="#78350f"
-                    strokeWidth="4"
+                    points="26,2 49,14 43,45 26,54 9,45 3,14"
+                    fill="url(#hpCrestCrimson)"
+                    stroke="#120904"
+                    strokeWidth="4.5"
+                    strokeLinejoin="round"
                   />
                   <polygon
-                    points="60,18 84,22 74,12"
-                    fill="#e2e8f0"
-                    stroke="#18181b"
-                    strokeWidth="2"
+                    points="9,42 22,15 30,28 37,18 44,42"
+                    fill="url(#hpTitleGold)"
+                    stroke="#120904"
+                    strokeWidth="3"
+                    strokeLinejoin="round"
                   />
+                  <circle cx="31" cy="12" r="4.2" fill="#fef08a" stroke="#120904" strokeWidth="1.8" />
                 </g>
 
-                {/* Sculpted Architectural Title Typography */}
+                {/* 3D Extruded Block Depth Layer for "HAWK PEAK" */}
                 <text
-                  x="106"
-                  y="54"
-                  fontFamily="Outfit, sans-serif"
+                  x="64"
+                  y="51"
+                  fontFamily="'Lilita One', 'Bungee', cursive"
                   fontWeight="900"
-                  fontSize="40"
-                  fill="#f6f1e7"
-                  stroke="#18181b"
-                  strokeWidth="6"
-                  paintOrder="stroke fill"
-                  letterSpacing="-0.5"
-                >
-                  SISYPHEAN MONOLITH
-                </text>
-                <text
-                  x="106"
-                  y="92"
-                  fontFamily="Outfit, sans-serif"
-                  fontWeight="900"
-                  fontSize="26"
-                  fill="#f59e0b"
-                  stroke="#18181b"
-                  strokeWidth="5"
+                  fontSize="43"
+                  letterSpacing="2"
+                  fill="#120904"
+                  stroke="#120904"
+                  strokeWidth="9.5"
+                  strokeLinejoin="round"
                   paintOrder="stroke fill"
                 >
-                  500 SHIFTING STEPS OF NOTHING
+                  HAWK PEAK
                 </text>
+
+                {/* Main Chiseled Gold-Amber Face for "HAWK PEAK" */}
                 <text
-                  x="108"
-                  y="118"
-                  fontFamily="JetBrains Mono, monospace"
-                  fontWeight="700"
-                  fontSize="10.2"
-                  fill="#99f6e4"
-                  letterSpacing="0.5"
+                  x="61"
+                  y="45"
+                  fontFamily="'Lilita One', 'Bungee', cursive"
+                  fontWeight="900"
+                  fontSize="43"
+                  letterSpacing="2"
+                  fill="url(#hpTitleGold)"
+                  stroke="#120904"
+                  strokeWidth="8"
+                  strokeLinejoin="round"
+                  paintOrder="stroke fill"
                 >
-                  PROCEDURAL SPIRE SEEDS · TURNTABLES &amp; CONVEYORS · CASCADING FALLS
+                  HAWK PEAK
                 </text>
+
+                {/* Slanted Molten-Gold "500" Crest Plaque */}
+                <g transform="translate(362, 8) skewX(-8)">
+                  <rect
+                    x="4"
+                    y="6"
+                    width="102"
+                    height="46"
+                    rx="10"
+                    fill="#120904"
+                  />
+                  <rect
+                    x="0"
+                    y="0"
+                    width="102"
+                    height="46"
+                    rx="10"
+                    fill="url(#hpBadge500)"
+                    stroke="#120904"
+                    strokeWidth="4.5"
+                  />
+                  <path
+                    d="M 8 7 L 94 7"
+                    stroke="#fef9c3"
+                    strokeWidth="3"
+                    strokeLinecap="round"
+                    opacity="0.88"
+                  />
+                  <text
+                    x="51"
+                    y="35"
+                    textAnchor="middle"
+                    fontFamily="'Lilita One', 'Bungee', cursive"
+                    fontWeight="900"
+                    fontSize="35"
+                    letterSpacing="1.5"
+                    fill="#fffdf5"
+                    stroke="#120904"
+                    strokeWidth="6.5"
+                    strokeLinejoin="round"
+                    paintOrder="stroke fill"
+                  >
+                    500
+                  </text>
+                </g>
               </svg>
-
-              <p className="text-xs sm:text-sm text-stone-200 max-w-md leading-relaxed font-medium watch-hide">
-                Ascend 500 non-repeating procedural monoliths across 10
-                architectural eras. Every step varies its turn angle, chasm gap,
-                and charge tension—and falling mutates the spire above you so
-                muscle memory will never save you.
-              </p>
-
-              {/* Active Spire Seed Pill */}
-              <div className="flex items-center gap-2 pt-0.5 watch-hide">
-                <span className="px-2.5 py-1 bg-[#1c1917] text-amber-300 border-2 border-[#18181b] font-mono-tabular text-xs font-bold">
-                  Spire Seed #{activeSeed}
-                </span>
-                <button
-                  type="button"
-                  onClick={(e) => handleRerollSpireSeed(undefined, e)}
-                  className="px-2.5 py-1 bg-stone-200 hover:bg-amber-200 text-zinc-900 border-2 border-[#18181b] font-mono-tabular text-xs font-bold cursor-pointer"
-                >
-                  Re-Roll Seed [G]
-                </button>
-              </div>
             </div>
 
-            {/* Primary CTA & Utility Actions */}
-            <div className="flex flex-wrap items-center gap-2.5 sm:gap-3 pt-1">
+            {/* Top-Right: Clean Audio Toggle */}
+            <div className="flex items-center gap-2 shrink-0 watch-hide">
               <button
                 type="button"
-                data-testid="start-climb-btn"
-                onClick={handleStartGame}
-                className="voxel-btn-primary px-5 sm:px-7 py-3 sm:py-3.5 text-sm sm:text-base min-h-[44px] cursor-pointer"
+                onClick={toggleMute}
+                aria-label={isMuted ? 'Unmute Audio' : 'Mute Audio'}
+                className="game-skew-plate px-3 py-2 rounded-md hover:brightness-110 cursor-pointer"
               >
-                Begin Ascent (500 Steps)
-              </button>
-
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.currentTarget.blur();
-                  setLeaderboardOpen(true);
-                }}
-                className="voxel-btn-yellow px-4 py-3 text-xs sm:text-sm min-h-[44px] cursor-pointer watch-hide"
-              >
-                Global Leaderboard
-              </button>
-
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.currentTarget.blur();
-                  setBlueprintOpen(true);
-                }}
-                className="voxel-btn-neutral px-4 py-3 text-xs sm:text-sm min-h-[44px] cursor-pointer watch-hide"
-              >
-                500-Step Atlas
+                <div className="game-unskew flex items-center justify-center">
+                  <svg viewBox="0 0 24 24" className="w-4 h-4">
+                    <path d="M11 5L6 9H2V15H6L11 19V5Z" fill="#fbf3db" />
+                    {!isMuted ? (
+                      <path
+                        d="M15.5 8.5C16.8 9.8 16.8 14.2 15.5 15.5M18.5 6C21 8.5 21 15.5 18.5 18"
+                        stroke="#facc15"
+                        strokeWidth="2.2"
+                        strokeLinecap="round"
+                        fill="none"
+                      />
+                    ) : (
+                      <path
+                        d="M16 9L21 15M21 9L16 15"
+                        stroke="#ef4444"
+                        strokeWidth="2.2"
+                        strokeLinecap="round"
+                      />
+                    )}
+                  </svg>
+                </div>
               </button>
             </div>
           </div>
 
-          {/* Bottom Controls Legend */}
-          <div className="flex items-center justify-between text-[11px] font-mono-tabular text-stone-200/90 pointer-events-auto watch-hide">
-            <span>
-              WASD / Arrows / Drag to Aim · Hold Space to Surge-Charge (Release
-              Before Overcharge Misfire!) · G Mutate Seed
-            </span>
+          {/* CENTER STAGE: 100% UNOBSTRUCTED 3D HERO SHOWCASE */}
+          <div className="flex-1 min-h-0 pointer-events-none" />
+
+          {/* BOTTOM BAR: CLEAN 4-OUTFIT SELECTOR STRIP (NO SCROLLBAR) + GIANT PLAY HIKE CTA */}
+          <div className="relative z-10 pointer-events-auto w-full shrink-0 flex items-end justify-between gap-3">
+            <div className="flex items-center gap-2 overflow-visible max-w-full py-0.5 watch-hide">
+              {CHARACTER_OUTFITS.map((item) => {
+                const selected = playerSkin === item.id;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    data-testid={`loadout-outfit-${item.id}`}
+                    onClick={() => handleSelectSkin(item.id)}
+                    className={`game-skew-plate px-3 py-2 rounded-md cursor-pointer transition-all shrink-0 ${
+                      selected
+                        ? 'ring-2 ring-[#facc15] brightness-110 -translate-y-0.5'
+                        : 'opacity-90 hover:opacity-100 hover:brightness-105'
+                    }`}
+                  >
+                    <div className="game-unskew flex items-center gap-2">
+                      <svg
+                        viewBox="0 0 28 24"
+                        className="w-6 h-5 shrink-0 drop-shadow"
+                      >
+                        <polygon
+                          points="14,2 25,9 21,22 7,22 3,9"
+                          fill={item.swatch}
+                          stroke={item.trim}
+                          strokeWidth="2"
+                        />
+                        <line
+                          x1="9"
+                          y1="9"
+                          x2="19"
+                          y2="9"
+                          stroke={item.trim}
+                          strokeWidth="2"
+                        />
+                      </svg>
+                      <div className="text-left">
+                        <div className="font-display text-xs font-black text-white leading-none">
+                          {item.name}
+                        </div>
+                        <div
+                          className={`text-[9px] font-mono-tabular font-bold mt-0.5 ${
+                            selected ? 'text-[#4ade80]' : 'text-[#a89076]'
+                          }`}
+                        >
+                          {selected ? '● EQUIPPED' : `RIG [${item.keyNum}]`}
+                        </div>
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="flex items-stretch shrink-0">
+              <button
+                type="button"
+                data-start="true"
+                data-testid="start-climb-btn"
+                onClick={handleStartGame}
+                className="game-play-cta px-7 sm:px-9 py-2.5 rounded-md cursor-pointer flex items-center justify-center"
+              >
+                <span className="game-unskew game-play-text font-display font-black text-xl sm:text-2xl tracking-wider uppercase whitespace-nowrap">
+                  PLAY HIKE
+                </span>
+              </button>
+            </div>
           </div>
         </div>
       )}
 
-      {/* 3. PLAYING HUD (Architectural Diorama Numerals + Wind Compass + Tension Surge Bar) */}
+      {/* 3. PLAYING HUD:
+          - Top-left: Stage counter, Atmospheric Layer badge, Active Rune Gate / River status, and NPC POV Talk button
+          - Top-right: Auto-Shifting Camera Angle badge [C], Vista [V], Mute [M], Pause [P]
+          - Bottom: Completely clean (Selected bottom control bar div & Feather/Glide div removed!) */}
       {shellState === 'playing' && (
-        <div className="fixed inset-0 z-10 pointer-events-none flex flex-col justify-between p-2 sm:p-4 md:p-5 watch-compact-pad">
+        <div className="fixed inset-0 z-10 pointer-events-none flex flex-col justify-between p-2.5 sm:p-4 md:p-5 watch-compact-pad">
           {/* Top Perimeter Row */}
           <div className="flex items-start justify-between gap-2">
-            {/* Top-Left Cluster: Step Number + Procedural Step Telemetry + Wind Compass */}
-            <div className="pointer-events-auto flex flex-col items-start min-w-0">
-              <div className="flex items-baseline gap-2">
-                <span
-                  data-testid="hud-step-readout"
-                  className="font-display text-3xl sm:text-5xl font-black voxel-stroke-white font-mono-tabular leading-none"
+            {/* Top-Left Cluster: Stage Progress + Atmospheric Layer + Stage Puzzle Status */}
+            <div className="pointer-events-auto flex flex-col items-start gap-1.5 min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                {/* Stage / Terrace Readout Badge */}
+                <div className="timber-plaque px-3.5 py-1.5 rounded-xl flex items-baseline gap-1.5">
+                  <span className="text-[10px] sm:text-xs font-bold text-amber-300 uppercase">
+                    Stage
+                  </span>
+                  <span
+                    data-testid="hud-step-readout"
+                    className="font-display text-xl sm:text-3xl font-black font-mono-tabular leading-none"
+                  >
+                    {Math.round(telemetry.currentStep)}
+                  </span>
+                  <span className="text-xs sm:text-sm font-bold text-amber-200/90 font-mono-tabular">
+                    /{TOTAL_LEVELS}
+                  </span>
+                </div>
+
+                {/* Atmospheric Layer Indicator (Valley -> Cloud Sea -> Stratosphere 100+ -> Thermosphere -> Deep Space) */}
+                <div
+                  data-testid="hud-atmosphere-badge"
+                  className={`px-3 py-1.5 rounded-xl border text-[10px] sm:text-xs font-mono-tabular font-black tracking-wider uppercase shadow watch-hide ${atmoMeta.colorClass}`}
                 >
-                  {Math.round(telemetry.currentStep)}
-                </span>
-                <span className="font-display text-sm sm:text-lg font-black voxel-stroke-yellow font-mono-tabular">
-                  /{TOTAL_LEVELS}
-                </span>
-                <span className="hidden md:inline-block ml-1 px-2 py-0.5 bg-[#1c1917] text-amber-300 border-2 border-[#18181b] font-mono-tabular text-[11px] font-bold">
-                  Seed #{telemetry.spireSeed}
-                </span>
+                  {atmoMeta.badge}
+                </div>
+
+                {/* Multi-Rune Gate Puzzle Status on Locked Stages */}
+                {telemetry.totalRuneCount > 0 && (
+                  <div
+                    data-testid="hud-rune-status"
+                    className={`px-3 py-1.5 rounded-xl border-2 text-xs font-mono-tabular font-black flex items-center gap-1.5 shadow ${
+                      telemetry.stepGateUnlocked
+                        ? 'bg-emerald-950/90 text-emerald-300 border-emerald-400'
+                        : 'bg-amber-950/90 text-amber-300 border-amber-400'
+                    }`}
+                  >
+                    <span>
+                      {telemetry.stepGateUnlocked
+                        ? `GATE UNLOCKED (${telemetry.totalRuneCount}/${telemetry.totalRuneCount})`
+                        : `RUNE LOCK ${telemetry.activeRuneCount}/${telemetry.totalRuneCount} · STEP ON RUNES`}
+                    </span>
+                  </div>
+                )}
+
+                {/* River & Bridge Physics Indicator in Base Camp Valley */}
+                {telemetry.inRiverWater && (
+                  <div className="px-3 py-1.5 rounded-xl bg-cyan-950/90 border border-cyan-400 text-cyan-200 text-xs font-mono-tabular font-black">
+                    RIVER CURRENT · WADING
+                  </div>
+                )}
+                {telemetry.onRiverBridge && (
+                  <div className="px-3 py-1.5 rounded-xl bg-amber-950/90 border border-amber-400 text-amber-200 text-xs font-mono-tabular font-black watch-hide">
+                    CEDAR ARCH BRIDGE
+                  </div>
+                )}
+
+                {/* Contextual Player POV Talk to NPC Button */}
+                {telemetry.nearbyNpc && (
+                  <button
+                    type="button"
+                    data-testid="talk-npc-btn"
+                    onClick={() => handleOpenNpcDialogue(telemetry.nearbyNpc!)}
+                    className={`px-3 py-1.5 rounded-xl border-2 border-[#1c1008] shadow font-extrabold text-xs cursor-pointer flex items-center gap-1.5 ${
+                      telemetry.nearbyNpcBlocking
+                        ? 'bg-rose-600 hover:bg-rose-500 text-white'
+                        : 'bg-[#f3e9d2] hover:bg-amber-200 text-[#241911]'
+                    }`}
+                  >
+                    <span>
+                      {telemetry.nearbyNpcBlocking
+                        ? `POV Confront ${telemetry.nearbyNpc.name} [E]`
+                        : `POV Talk to ${telemetry.nearbyNpc.name} [E]`}
+                    </span>
+                  </button>
+                )}
               </div>
 
-              {/* Compact Biome, Peak & Falls Sub-Strip */}
-              <div className="voxel-panel px-2 sm:px-2.5 py-1 mt-1.5 flex items-center gap-1.5 sm:gap-2 text-[10px] sm:text-xs font-bold watch-hide">
-                <span
-                  className="w-2.5 h-2.5 border border-[#18181b] shrink-0"
-                  style={{ backgroundColor: activeBiome.themeColor }}
-                />
-                <span className="truncate max-w-[82px] sm:max-w-[190px]">
-                  {telemetry.activeStepMeta.title}
+              {/* Stage Title & Auto-Camera Shift Countdown */}
+              <div className="flex flex-wrap items-center gap-2 text-[11px] font-mono-tabular font-bold text-[#fef3c7] bg-[#1c1008]/75 px-3 py-1 rounded-lg border border-amber-500/30 watch-hide">
+                <span>{telemetry.stepTitle}</span>
+                <span className="text-amber-400">·</span>
+                <span className="text-sky-300">
+                  Next Cam Shift: Stage {telemetry.nextCameraShiftStep}
                 </span>
-                <span aria-hidden="true">·</span>
-                <span className="font-mono-tabular text-stone-700 whitespace-nowrap">
-                  Peak {Math.round(telemetry.peakStep)}
-                </span>
-                <span aria-hidden="true" className="hidden sm:inline">
-                  ·
-                </span>
-                <span className="hidden sm:inline font-mono-tabular text-rose-700 whitespace-nowrap">
-                  Falls {Math.round(telemetry.fallsCount)}
-                </span>
-                {telemetry.spireMutations > 0 && (
+                {telemetry.isCharging && (
                   <>
-                    <span aria-hidden="true" className="hidden md:inline">
-                      ·
-                    </span>
-                    <span className="hidden md:inline font-mono-tabular text-amber-800 whitespace-nowrap">
-                      Shifts {telemetry.spireMutations}
+                    <span className="text-amber-400">·</span>
+                    <span className="text-emerald-300 font-black">
+                      JUMP CHARGE {Math.round(telemetry.chargeRatio * 100)}% (IDEAL ~
+                      {telemetry.idealChargePercent}%)
                     </span>
                   </>
                 )}
-                {telemetry.glitchActive && (
-                  <>
-                    <span aria-hidden="true">·</span>
-                    <span className="text-purple-800 font-extrabold">
-                      INVERTED!
-                    </span>
-                  </>
-                )}
-              </div>
-
-              {/* Next Jump Non-Repeating Geometry & Live Wind Compass Strip (Desktop & Tablet) */}
-              <div className="hidden sm:flex items-center gap-2 mt-1.5 text-[11px] font-mono-tabular font-bold watch-hide">
-                <div className="px-2 py-0.5 bg-[#1c1917] text-stone-100 border-2 border-[#18181b] flex items-center gap-2">
-                  <span>Air Gap: {nextStepMeta.clearGap.toFixed(1)}m</span>
-                  <span aria-hidden="true">·</span>
-                  <span className="text-emerald-300">
-                    Ideal Power: ~{telemetry.idealChargePercent}%
-                  </span>
-                  <span aria-hidden="true">·</span>
-                  <span>
-                    Turn:{' '}
-                    {nextStepMeta.turnAngleDeg > 0
-                      ? `+${nextStepMeta.turnAngleDeg}`
-                      : nextStepMeta.turnAngleDeg}
-                    °
-                  </span>
-                </div>
-
-                <div className="px-2 py-0.5 bg-[#0f766e] text-amber-50 border-2 border-[#18181b] flex items-center gap-1.5">
-                  <span>Wind: {telemetry.windLabel}</span>
-                </div>
               </div>
             </div>
 
-            {/* Top-Right Cluster: Relic Shard Counter + Square Action Buttons */}
+            {/* Top-Right Cluster: Camera Angle [C], Vista [V], Mute [M], Pause [P] */}
             <div className="pointer-events-auto flex flex-col items-end gap-1.5 shrink-0">
-              <div className="flex items-center gap-1.5 watch-hide">
-                <span className="font-display text-2xl sm:text-4xl font-black voxel-stroke-yellow font-mono-tabular leading-none">
-                  {Math.round(telemetry.coinsCollected)}
-                </span>
-                <span
-                  aria-label="Relic Shards"
-                  className="w-6 h-6 sm:w-7 sm:h-7 bg-[#d97706] border-[3px] border-[#18181b] shadow-[0_3px_0_#18181b] flex items-center justify-center font-mono-tabular font-black text-xs text-amber-50"
-                >
-                  R
-                </span>
-              </div>
-
-              {/* Utility Buttons */}
               <div className="flex items-center gap-1.5">
                 <button
                   type="button"
                   tabIndex={-1}
-                  onClick={(e) => handleRerollSpireSeed(undefined, e)}
-                  aria-label="Mutate Spire Seed [G]"
-                  title="Re-Roll Non-Repeating Spire Seed [G]"
-                  className="voxel-btn-neutral min-w-[38px] min-h-[38px] sm:min-w-[44px] sm:min-h-[44px] px-2 flex items-center justify-center cursor-pointer watch-hide"
+                  data-testid="camera-angle-btn"
+                  onClick={cycleCameraAngle}
+                  aria-label={`Switch Camera Angle [C]: ${activeCamPreset.shortLabel}`}
+                  title={`Camera shifts automatically every 12 stages · Current: ${activeCamPreset.label} [Press C]`}
+                  className="timber-plaque px-2.5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer watch-hide hover:brightness-110"
                 >
-                  <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none">
+                  <svg viewBox="0 0 20 20" className="w-4 h-4 shrink-0">
                     <rect
-                      x="4"
-                      y="4"
-                      width="16"
-                      height="16"
-                      stroke="#18181b"
-                      strokeWidth="2.2"
+                      x="2"
+                      y="5"
+                      width="12"
+                      height="10"
+                      rx="2"
+                      fill="#fcd34d"
                     />
-                    <circle cx="8.5" cy="8.5" r="1.5" fill="#18181b" />
-                    <circle cx="15.5" cy="15.5" r="1.5" fill="#18181b" />
-                    <circle cx="12" cy="12" r="1.5" fill="#d95829" />
+                    <polygon points="14,8 19,5 19,15 14,12" fill="#f59e0b" />
                   </svg>
+                  <span>{activeCamPreset.shortLabel} [C]</span>
                 </button>
 
                 <button
                   type="button"
                   tabIndex={-1}
+                  data-testid="cinematic-vista-btn"
                   onClick={(e) => {
                     e.currentTarget.blur();
-                    setLeaderboardOpen(true);
+                    setVistaOverviewActive((v) => !v);
                   }}
-                  aria-label="Open Global Leaderboard [L]"
-                  title="Global Leaderboard & Profile [L]"
-                  className="voxel-btn-yellow min-w-[38px] min-h-[38px] sm:min-w-[44px] sm:min-h-[44px] px-2 flex items-center justify-center cursor-pointer watch-hide"
+                  aria-label="Trail Vista Overview [V]"
+                  title="Toggle Wide Trail Vista [Press V]"
+                  className="timber-plaque px-2.5 py-2 rounded-xl text-amber-300 text-xs font-bold cursor-pointer watch-hide hover:brightness-110"
                 >
-                  <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none">
-                    <path
-                      d="M6 4H18V9C18 12.3137 15.3137 15 12 15C8.68629 15 6 12.3137 6 9V4Z"
-                      stroke="#18181b"
-                      strokeWidth="2.2"
-                    />
-                    <path
-                      d="M12 15V20M8 20H16"
-                      stroke="#18181b"
-                      strokeWidth="2.2"
-                    />
-                  </svg>
-                </button>
-
-                <button
-                  type="button"
-                  tabIndex={-1}
-                  onClick={(e) => {
-                    e.currentTarget.blur();
-                    setBlueprintOpen(true);
-                  }}
-                  aria-label="Open 500-Level Atlas [B]"
-                  title="500-Step Spire Atlas [B]"
-                  className="voxel-btn-neutral min-w-[38px] min-h-[38px] sm:min-w-[44px] sm:min-h-[44px] px-2 flex items-center justify-center cursor-pointer watch-hide"
-                >
-                  <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none">
-                    <rect
-                      x="3"
-                      y="4"
-                      width="18"
-                      height="16"
-                      stroke="#18181b"
-                      strokeWidth="2.2"
-                    />
-                    <line
-                      x1="8"
-                      y1="9"
-                      x2="16"
-                      y2="9"
-                      stroke="#18181b"
-                      strokeWidth="2.2"
-                    />
-                    <line
-                      x1="8"
-                      y1="14"
-                      x2="13"
-                      y2="14"
-                      stroke="#18181b"
-                      strokeWidth="2.2"
-                    />
-                  </svg>
+                  {vistaOverviewActive ? 'Close Vista [V]' : 'Vista [V]'}
                 </button>
 
                 <button
@@ -878,47 +928,27 @@ export default function App() {
                   tabIndex={-1}
                   onClick={toggleMute}
                   aria-label={isMuted ? 'Unmute Audio [M]' : 'Mute Audio [M]'}
-                  title="Mute / Unmute Music & Voice [M]"
-                  className="voxel-btn-neutral min-w-[38px] min-h-[38px] sm:min-w-[44px] sm:min-h-[44px] px-2 flex items-center justify-center cursor-pointer watch-hide"
+                  className="voxel-btn-neutral min-w-[38px] min-h-[38px] sm:min-w-[42px] sm:min-h-[42px] px-2 rounded-xl flex items-center justify-center cursor-pointer watch-hide"
                 >
-                  {isMuted ? (
-                    <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none">
+                  <svg viewBox="0 0 24 24" className="w-4 h-4">
+                    <path d="M11 5L6 9H2V15H6L11 19V5Z" fill="#1c1008" />
+                    {!isMuted ? (
                       <path
-                        d="M11 5L6 9H2V15H6L11 19V5Z"
-                        stroke="#18181b"
+                        d="M15.5 8.5C16.8 9.8 16.8 14.2 15.5 15.5"
+                        stroke="#1c1008"
                         strokeWidth="2.2"
+                        strokeLinecap="round"
+                        fill="none"
                       />
-                      <line
-                        x1="21"
-                        y1="9"
-                        x2="15"
-                        y2="15"
-                        stroke="#ef4444"
-                        strokeWidth="2.4"
-                      />
-                      <line
-                        x1="15"
-                        y1="9"
-                        x2="21"
-                        y2="15"
-                        stroke="#ef4444"
-                        strokeWidth="2.4"
-                      />
-                    </svg>
-                  ) : (
-                    <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none">
+                    ) : (
                       <path
-                        d="M11 5L6 9H2V15H6L11 19V5Z"
-                        stroke="#18181b"
+                        d="M16 9L21 15M21 9L16 15"
+                        stroke="#dc2626"
                         strokeWidth="2.2"
+                        strokeLinecap="round"
                       />
-                      <path
-                        d="M15.5 8.5C17 10 17 14 15.5 15.5"
-                        stroke="#18181b"
-                        strokeWidth="2.2"
-                      />
-                    </svg>
-                  )}
+                    )}
+                  </svg>
                 </button>
 
                 <button
@@ -929,149 +959,159 @@ export default function App() {
                     setShellState('paused');
                   }}
                   aria-label="Pause Game [P]"
-                  title="Pause [P]"
-                  className="voxel-btn-neutral min-w-[38px] min-h-[38px] sm:min-w-[44px] sm:min-h-[44px] px-2 flex items-center justify-center cursor-pointer"
+                  className="voxel-btn-neutral min-w-[38px] min-h-[38px] sm:min-w-[42px] sm:min-h-[42px] px-2 rounded-xl flex items-center justify-center cursor-pointer"
                 >
-                  <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none">
-                    <rect x="6" y="5" width="4" height="14" fill="#18181b" />
-                    <rect x="14" y="5" width="4" height="14" fill="#18181b" />
+                  <svg viewBox="0 0 20 20" className="w-4 h-4">
+                    <rect
+                      x="5"
+                      y="4"
+                      width="3.5"
+                      height="12"
+                      rx="1"
+                      fill="#1c1008"
+                    />
+                    <rect
+                      x="11.5"
+                      y="4"
+                      width="3.5"
+                      height="12"
+                      rx="1"
+                      fill="#1c1008"
+                    />
                   </svg>
                 </button>
               </div>
             </div>
           </div>
 
-          {/* Non-Blocking Top-Center Narration Toast (Auto-fades after 2.8s, never covers the middle of the screen!) */}
-          {telemetry.taunt && telemetry.fallsCount > 0 && (
-            <div className="fixed top-2.5 left-1/2 -translate-x-1/2 z-20 max-w-sm w-[88vw] pointer-events-none watch-hide">
-              <div className="voxel-panel-dark px-3 py-1.5 text-center border-2 border-amber-500/80 shadow-md">
-                <div className="text-[10px] font-mono-tabular font-black text-amber-400 uppercase">
-                  Fell -{telemetry.taunt.stepsLost} Steps to Monolith{' '}
-                  {telemetry.currentStep} · Spire Shifted
+          {/* Milestone / Perspective Shift Toast Banner */}
+          {milestoneBanner && (
+            <div className="fixed top-24 left-1/2 -translate-x-1/2 z-20 pointer-events-none">
+              <div className="timber-plaque px-5 py-2 rounded-2xl text-center border-2 border-amber-400/60 shadow-xl">
+                <div className="font-display text-sm sm:text-base font-black text-[#fef9c3]">
+                  {milestoneBanner.title}
                 </div>
-                <p className="text-[11px] font-semibold text-stone-100 truncate mt-0.5">
-                  &ldquo;{telemetry.taunt.quote}&rdquo;
-                </p>
+                <div className="text-[11px] font-mono-tabular font-bold text-amber-200">
+                  {milestoneBanner.subtitle}
+                </div>
               </div>
             </div>
           )}
 
-          {/* Bottom Perimeter Row: Touch Aim + Oscillating Surge Meter + Hold-to-Vault */}
-          <div className="pointer-events-auto flex items-end justify-between gap-2 w-full max-w-xl mx-auto">
-            <div className="voxel-panel p-2 sm:p-2.5 flex-1 flex items-center justify-between gap-2 sm:gap-3">
-              {/* Touch / Mouse Aim Buttons */}
-              <div className="flex items-center gap-1 watch-hide">
-                <button
-                  type="button"
-                  tabIndex={-1}
-                  onPointerDown={() => setTouchMoveDir({ x: -1, y: 0 })}
-                  onPointerUp={() => setTouchMoveDir({ x: 0, y: 0 })}
-                  onPointerLeave={() => setTouchMoveDir({ x: 0, y: 0 })}
-                  aria-label="Aim Left"
-                  className="voxel-btn-neutral w-9 h-9 sm:w-10 sm:h-10 flex items-center justify-center text-xs font-black cursor-pointer"
-                >
-                  ◀
-                </button>
-                <button
-                  type="button"
-                  tabIndex={-1}
-                  onPointerDown={() => setTouchMoveDir({ x: 0, y: 1 })}
-                  onPointerUp={() => setTouchMoveDir({ x: 0, y: 0 })}
-                  onPointerLeave={() => setTouchMoveDir({ x: 0, y: 0 })}
-                  aria-label="Aim Forward"
-                  className="voxel-btn-neutral w-9 h-9 sm:w-10 sm:h-10 flex items-center justify-center text-xs font-black cursor-pointer"
-                >
-                  ▲
-                </button>
-                <button
-                  type="button"
-                  tabIndex={-1}
-                  onPointerDown={() => setTouchMoveDir({ x: 1, y: 0 })}
-                  onPointerUp={() => setTouchMoveDir({ x: 0, y: 0 })}
-                  onPointerLeave={() => setTouchMoveDir({ x: 0, y: 0 })}
-                  aria-label="Aim Right"
-                  className="voxel-btn-neutral w-9 h-9 sm:w-10 sm:h-10 flex items-center justify-center text-xs font-black cursor-pointer"
-                >
-                  ▶
-                </button>
-              </div>
-
-              {/* Oscillating Tension & Target Lock Meter with Visual Sweet-Spot Bracket */}
-              <div className="flex-1 flex items-center gap-2 min-w-0">
-                <span
-                  className={`text-[10px] sm:text-xs font-mono-tabular font-black whitespace-nowrap watch-hide ${
-                    telemetry.isOnTarget
-                      ? 'text-emerald-700'
-                      : !telemetry.isAimAligned
-                      ? 'text-amber-700'
-                      : telemetry.isOvercharging
-                      ? 'text-rose-700'
-                      : 'text-zinc-900'
-                  }`}
-                >
-                  {telemetry.isOnTarget
-                    ? 'RELEASE NOW!'
-                    : !telemetry.isAimAligned
-                    ? telemetry.angleErrorDeg > 0
-                      ? 'AIM ◀ A'
-                      : 'AIM D ▶'
-                    : telemetry.isOvercharging
-                    ? 'SURGE!'
-                    : `TARGET ~${telemetry.idealChargePercent}%`}
-                </span>
-                <div className="flex-1 h-4 bg-stone-200 border-2 border-[#18181b] overflow-hidden relative">
-                  {/* Visual Target Sweet-Spot Bracket on the Tension Bar */}
-                  <div
-                    aria-hidden="true"
-                    className="absolute top-0 bottom-0 border-x-2 border-emerald-700 bg-emerald-400/35 pointer-events-none z-10"
-                    style={{
-                      left: `${Math.max(
-                        4,
-                        Math.min(82, telemetry.idealChargePercent - 7)
-                      )}%`,
-                      width: '14%',
+          {/* PLAYER POV NPC CONVERSATION DIALOGUE OVERLAY */}
+          {activeDialogueNpc && activeDialogueContext && (
+            <div
+              role="dialog"
+              aria-label={`POV Conversation with ${activeDialogueNpc.name}`}
+              className="fixed bottom-6 left-1/2 -translate-x-1/2 z-30 w-[92vw] max-w-lg pointer-events-auto"
+            >
+              <div className="relative bg-[#f1f5f9]/95 backdrop-blur-md text-[#1e293b] p-4 sm:p-5 rounded-2xl border-[3px] border-[#1e293b] shadow-2xl space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b-2 border-slate-300 pb-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-xs font-mono-tabular font-black uppercase text-[#b45309]">
+                      POV CAM · {activeDialogueNpc.name} ({activeDialogueNpc.role})
+                    </span>
+                    <span
+                      data-testid="npc-stance-badge"
+                      className={`text-[10px] font-mono-tabular font-extrabold uppercase px-2 py-0.5 rounded border ${
+                        activeDialogueContext.isBlockingNow
+                          ? 'bg-rose-100 text-rose-800 border-rose-400'
+                          : activeDialogueNpc.blocksPathByDefault
+                          ? 'bg-emerald-100 text-emerald-800 border-emerald-400'
+                          : 'bg-amber-100 text-amber-900 border-amber-400'
+                      }`}
+                    >
+                      {activeDialogueContext.isBlockingNow
+                        ? `BLOCKING STAGE ${telemetry.currentStep}`
+                        : activeDialogueNpc.blocksPathByDefault
+                        ? 'LANE CLEARED'
+                        : `STAGE ${telemetry.currentStep} SCOUT`}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActiveDialogueNpc(null);
+                      setNpcReplyLine(null);
                     }}
-                  />
-                  <div
-                    className="h-full transition-none relative z-0"
-                    style={{
-                      width: `${Math.round(telemetry.chargeRatio * 100)}%`,
-                      backgroundColor: telemetry.isOnTarget
-                        ? '#10b981'
-                        : telemetry.isOvercharging
-                        ? '#e11d48'
-                        : telemetry.chargeRatio > 0.78
-                        ? '#d95829'
-                        : telemetry.chargeRatio > 0.42
-                        ? '#eab308'
-                        : '#0f766e',
-                    }}
-                  />
+                    className="text-xs font-black text-slate-500 hover:text-slate-900 cursor-pointer"
+                  >
+                    [ESC]
+                  </button>
                 </div>
-                <span className="text-xs font-mono-tabular font-black text-zinc-900 w-9 text-right">
-                  {Math.round(telemetry.chargeRatio * 100)}%
-                </span>
-              </div>
 
-              {/* Hold to Vault Touch/Click Trigger */}
-              <button
-                type="button"
-                tabIndex={-1}
-                onPointerDown={() => {
-                  soundEngine.startMusicLoop();
-                  setTouchCharging(true);
-                }}
-                onPointerUp={() => setTouchCharging(false)}
-                onPointerCancel={() => setTouchCharging(false)}
-                onPointerLeave={() => {
-                  if (touchCharging) setTouchCharging(false);
-                }}
-                className="voxel-btn-primary px-3 sm:px-4 py-2 text-xs sm:text-sm min-h-[40px] sm:min-h-[44px] cursor-pointer whitespace-nowrap"
-              >
-                Hold to Vault
-              </button>
+                <p className="text-sm sm:text-base font-bold text-slate-800 leading-relaxed">
+                  &ldquo;{npcReplyLine || activeDialogueContext.greeting}&rdquo;
+                </p>
+
+                <div className="space-y-1.5 pt-1">
+                  {activeDialogueContext.dynamicChoices.map((ch, idx) => {
+                    const isSelected = idx === selectedChoiceIdx;
+                    return (
+                      <button
+                        key={ch.label}
+                        type="button"
+                        data-testid={`npc-choice-${ch.action}`}
+                        onClick={() => {
+                          setSelectedChoiceIdx(idx);
+                          handleSelectDialogueChoice(ch);
+                        }}
+                        className={`w-full text-left px-3 py-1.5 rounded-xl font-display text-sm sm:text-lg font-black flex items-center gap-2.5 transition-colors cursor-pointer ${
+                          isSelected
+                            ? 'bg-white text-[#0f172a] shadow-sm'
+                            : 'text-slate-500 hover:text-slate-800'
+                        }`}
+                      >
+                        <span className="text-[#1e3a8a] text-base sm:text-xl w-5">
+                          {isSelected ? '▸' : ''}
+                        </span>
+                        <span>
+                          {ch.highlightWord &&
+                          ch.label.includes(ch.highlightWord) ? (
+                            <>
+                              {ch.label.slice(
+                                0,
+                                ch.label.indexOf(ch.highlightWord)
+                              )}
+                              <span className="text-[#dc2626]">
+                                {ch.highlightWord}
+                              </span>
+                              {ch.label.slice(
+                                ch.label.indexOf(ch.highlightWord) +
+                                  ch.highlightWord.length
+                              )}
+                            </>
+                          ) : (
+                            ch.label
+                          )}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
             </div>
-          </div>
+          )}
+
+          {/* Subtle NPC Bark or Fall Roast Subtitle Banner when not in active dialogue */}
+          {!activeDialogueNpc &&
+            (telemetry.nearbyNpcBark || tauntBanner) && (
+              <div className="mx-auto mb-2 max-w-md w-[90vw] pointer-events-auto watch-hide">
+                <div
+                  onClick={() => {
+                    if (telemetry.nearbyNpc) {
+                      handleOpenNpcDialogue(telemetry.nearbyNpc);
+                    }
+                  }}
+                  className="parchment-sheet px-4 py-2 rounded-xl cursor-pointer text-center shadow-lg"
+                >
+                  <p className="text-xs sm:text-sm font-black leading-snug">
+                    {telemetry.nearbyNpcBark ||
+                      `"${tauntBanner?.quote}" — ${tauntBanner?.author}`}
+                  </p>
+                </div>
+              </div>
+            )}
         </div>
       )}
 
@@ -1080,40 +1120,44 @@ export default function App() {
         <div
           role="dialog"
           aria-modal="true"
-          aria-label="Climb Paused"
+          aria-label="Hike Paused"
           className="fixed inset-0 z-30 flex items-center justify-center p-4 pointer-events-auto"
-          style={{ backgroundColor: 'rgba(15, 23, 30, 0.8)' }}
+          style={{ backgroundColor: 'rgba(28, 19, 11, 0.82)' }}
         >
-          <div className="voxel-panel w-full max-w-md p-5 sm:p-6 space-y-5">
+          <div className="voxel-panel w-full max-w-md p-5 sm:p-6 space-y-5 rounded-2xl">
             <div className="space-y-1">
               <div className="text-xs font-mono-tabular font-black text-amber-800 uppercase">
-                Sanctuary Ascent Paused · Seed #{activeSeed}
+                Hawk Peak Trail Paused · Seed #{activeSeed}
               </div>
               <h2 className="font-display text-2xl font-black text-zinc-900">
-                Monolith {Math.round(telemetry.currentStep)} of {TOTAL_LEVELS}
+                Stage {Math.round(telemetry.currentStep)} of {TOTAL_LEVELS}
               </h2>
               <p className="text-xs text-stone-700 leading-relaxed">
-                {telemetry.activeStepMeta.psychologicalTrap}
+                {telemetry.stepTrapText}
               </p>
             </div>
 
             <div className="grid grid-cols-3 gap-2 text-center font-mono-tabular">
-              <div className="p-2.5 bg-amber-100 border-2 border-[#18181b]">
+              <div className="p-2.5 bg-amber-100 border-2 border-[#18181b] rounded-lg">
                 <div className="text-[10px] font-bold text-stone-600">PEAK</div>
                 <div className="text-base font-black text-zinc-900">
                   {telemetry.peakStep}
                 </div>
               </div>
-              <div className="p-2.5 bg-rose-100 border-2 border-[#18181b]">
-                <div className="text-[10px] font-bold text-stone-600">FALLS</div>
+              <div className="p-2.5 bg-rose-100 border-2 border-[#18181b] rounded-lg">
+                <div className="text-[10px] font-bold text-stone-600">
+                  TUMBLES
+                </div>
                 <div className="text-base font-black text-rose-700">
                   {telemetry.fallsCount}
                 </div>
               </div>
-              <div className="p-2.5 bg-teal-100 border-2 border-[#18181b]">
-                <div className="text-[10px] font-bold text-stone-600">RAGE</div>
-                <div className="text-base font-black text-teal-900">
-                  {telemetry.rageScore}%
+              <div className="p-2.5 bg-sky-100 border-2 border-[#18181b] rounded-lg">
+                <div className="text-[10px] font-bold text-stone-600">
+                  WORST DROP
+                </div>
+                <div className="text-base font-black text-sky-900">
+                  -{telemetry.biggestFallLoss}
                 </div>
               </div>
             </div>
@@ -1127,198 +1171,119 @@ export default function App() {
                 }}
                 className="voxel-btn-primary w-full py-2.5 text-sm min-h-[44px] cursor-pointer"
               >
-                Resume Ascent [Esc]
-              </button>
-
-              <button
-                type="button"
-                onClick={(e) => {
-                  handleRerollSpireSeed(undefined, e);
-                  setShellState('playing');
-                }}
-                className="voxel-btn-yellow w-full py-2.5 text-xs sm:text-sm min-h-[44px] cursor-pointer"
-              >
-                Re-Roll New Procedural Spire Seed [G]
-              </button>
-
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.currentTarget.blur();
-                  setLeaderboardOpen(true);
-                }}
-                className="voxel-btn-neutral w-full py-2.5 text-xs sm:text-sm min-h-[44px] cursor-pointer"
-              >
-                Global Leaderboard &amp; Relic Profile [L]
+                Resume Hike [Esc]
               </button>
 
               <button
                 type="button"
                 onClick={handleRestartClimb}
-                className="voxel-btn-neutral w-full py-2.5 text-xs sm:text-sm min-h-[44px] cursor-pointer"
+                className="voxel-btn-neutral w-full py-2.5 text-sm min-h-[44px] cursor-pointer"
               >
-                Restart from Step 1 [R]
+                Restart from Base Camp [R]
               </button>
 
               <button
                 type="button"
                 onClick={handleRetireAttempt}
-                className="voxel-btn-neutral w-full py-2 text-xs text-rose-700 min-h-[40px] cursor-pointer"
+                className="voxel-btn-neutral w-full py-2.5 text-sm min-h-[44px] cursor-pointer text-rose-700"
               >
-                Retire &amp; Generate Suffering Receipt
+                End Hike &amp; View Summary
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* 5. GAMEOVER / STEP 500 PHILOSOPHICAL ENDING OVERLAY */}
+      {/* 5. SUMMIT / GAME OVER MODAL */}
       {shellState === 'gameover' && (
         <div
           role="dialog"
           aria-modal="true"
-          aria-label="Philosophical Verdict and Suffering Receipt"
-          className="fixed inset-0 z-30 flex items-center justify-center p-3 sm:p-6 pointer-events-auto overflow-y-auto"
-          style={{ backgroundColor: 'rgba(15, 23, 30, 0.9)' }}
+          aria-label={
+            finalSnapshot.won ? 'Summit Reached' : 'Climb Retired Summary'
+          }
+          className="fixed inset-0 z-30 flex items-center justify-center p-4 pointer-events-auto overflow-y-auto"
+          style={{ backgroundColor: 'rgba(28, 19, 11, 0.88)' }}
         >
-          <div className="voxel-panel w-full max-w-xl p-5 sm:p-8 space-y-6 my-auto">
-            <div className="space-y-2 text-center">
-              <div className="inline-block px-3 py-1 bg-[#eab308] border-2 border-[#18181b] text-xs font-mono-tabular font-black text-zinc-950">
+          <div className="voxel-panel w-full max-w-lg p-5 sm:p-7 space-y-5 my-auto rounded-2xl">
+            <div className="space-y-1.5">
+              <div className="text-xs font-mono-tabular font-black text-amber-800 uppercase">
                 {finalSnapshot.won
-                  ? 'MONOLITH 500 / 500 SUMMIT REACHED'
-                  : `EXPEDITION RETIRED AT MONOLITH ${finalSnapshot.currentStep} / ${TOTAL_LEVELS}`}
+                  ? 'HAWK PEAK SUMMIT 500 CONQUERED'
+                  : `HIKE ENDED AT STAGE ${finalSnapshot.currentStep}`}
               </div>
+              <h2 className="font-display text-2xl sm:text-3xl font-black text-zinc-900">
+                {finalSnapshot.won
+                  ? '500 Stages to the Stars'
+                  : `Peak Reached: Stage ${finalSnapshot.peakStep} / ${TOTAL_LEVELS}`}
+              </h2>
+            </div>
 
-              <h2
+            <div className="p-4 bg-[#4f3b22] text-[#fef9c3] border-2 border-[#2b1d10] rounded-xl space-y-1">
+              <p
                 data-testid="philosophical-ending-quote"
-                className="font-display text-2xl sm:text-3xl font-black text-zinc-950 leading-tight pt-2"
+                className="font-display text-sm sm:text-base font-bold italic"
               >
                 &ldquo;
                 {finalSnapshot.won
                   ? PHILOSOPHICAL_ENDING_QUOTE
-                  : 'You stopped climbing, which is the only way to win.'}
+                  : tauntBanner?.quote ||
+                    'Every stage is a puzzle, and gravity never forgets.'}
                 &rdquo;
-              </h2>
-
-              <p className="text-xs sm:text-sm text-stone-700 max-w-md mx-auto">
-                {finalSnapshot.won
-                  ? 'Five hundred shifting monoliths, rotating sundials, meteor bolts, and cascading falls—only to discover the summit is an empty stone.'
-                  : 'Every fall landed you on a lower monolith and mutated the spire above you.'}
               </p>
+              <div className="text-[11px] font-mono-tabular text-amber-300">
+                —{' '}
+                {finalSnapshot.won
+                  ? 'Hawk Peak Astral Sanctuary (Stage 500)'
+                  : tauntBanner?.author || 'Ranger Barnaby'}
+              </div>
             </div>
 
-            {/* Viral Suffering Receipt Card */}
-            <div className="p-4 bg-[#fffdf9] border-[3px] border-[#18181b] space-y-3 font-mono-tabular">
-              <div className="flex items-center justify-between text-xs font-bold text-stone-600 border-b-2 border-stone-200 pb-2">
-                <span>PILGRIM: {playerHandle}</span>
-                <span>SEED #{activeSeed}</span>
+            <div className="grid grid-cols-3 gap-2 text-center font-mono-tabular">
+              <div className="p-2.5 bg-amber-100 border-2 border-[#18181b] rounded-lg">
+                <div className="text-[10px] font-bold text-stone-600">PEAK</div>
+                <div className="text-base font-black text-zinc-900">
+                  {finalSnapshot.peakStep}
+                </div>
               </div>
-
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center">
-                <div className="p-2 bg-amber-100 border-2 border-[#18181b]">
-                  <div className="text-[10px] font-bold text-stone-600">
-                    PEAK STEP
-                  </div>
-                  <div className="text-base font-black text-zinc-900">
-                    {finalSnapshot.peakStep}/500
-                  </div>
+              <div className="p-2.5 bg-rose-100 border-2 border-[#18181b] rounded-lg">
+                <div className="text-[10px] font-bold text-stone-600">
+                  FALLS
                 </div>
-                <div className="p-2 bg-rose-100 border-2 border-[#18181b]">
-                  <div className="text-[10px] font-bold text-stone-600">
-                    TOTAL FALLS
-                  </div>
-                  <div className="text-base font-black text-rose-700">
-                    {finalSnapshot.fallsCount}
-                  </div>
+                <div className="text-base font-black text-rose-700">
+                  {finalSnapshot.fallsCount}
                 </div>
-                <div className="p-2 bg-orange-100 border-2 border-[#18181b]">
-                  <div className="text-[10px] font-bold text-stone-600">
-                    MAX DROP
-                  </div>
-                  <div className="text-base font-black text-orange-800">
-                    -{finalSnapshot.biggestFallLoss}
-                  </div>
+              </div>
+              <div className="p-2.5 bg-orange-100 border-2 border-[#18181b] rounded-lg">
+                <div className="text-[10px] font-bold text-stone-600">
+                  WORST DROP
                 </div>
-                <div className="p-2 bg-teal-100 border-2 border-[#18181b]">
-                  <div className="text-[10px] font-bold text-stone-600">
-                    RAGE INDEX
-                  </div>
-                  <div className="text-base font-black text-teal-900">
-                    {finalSnapshot.rageScore}%
-                  </div>
+                <div className="text-base font-black text-orange-800">
+                  -{finalSnapshot.biggestFallLoss}
                 </div>
               </div>
             </div>
 
-            <div className="flex flex-wrap items-center justify-center gap-3">
+            <div className="flex flex-wrap items-center gap-2.5">
               <button
                 type="button"
-                data-testid="play-again-btn"
                 onClick={handleRestartClimb}
-                className="voxel-btn-primary px-6 py-3 text-sm min-h-[44px] cursor-pointer"
+                className="voxel-btn-primary flex-1 py-3 text-sm min-h-[44px] cursor-pointer"
               >
-                Climb Again (Step 1)
-              </button>
-
-              <button
-                type="button"
-                onClick={(e) => {
-                  handleRerollSpireSeed(undefined, e);
-                  setShellState('playing');
-                }}
-                className="voxel-btn-yellow px-4 py-3 text-xs sm:text-sm min-h-[44px] cursor-pointer"
-              >
-                New Procedural Seed
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setLeaderboardOpen(true)}
-                className="voxel-btn-neutral px-4 py-3 text-xs sm:text-sm min-h-[44px] cursor-pointer"
-              >
-                Global Leaderboard
+                Hike Again from Base Camp
               </button>
 
               <button
                 type="button"
                 onClick={handleCopyViralReceipt}
-                className="voxel-btn-neutral px-4 py-3 text-xs sm:text-sm min-h-[44px] cursor-pointer"
+                className="voxel-btn-yellow px-4 py-3 text-xs sm:text-sm min-h-[44px] cursor-pointer"
               >
-                {copiedReceipt ? 'Receipt Copied!' : 'Copy Suffering Receipt'}
+                {copiedReceipt ? 'Copied Trail Log!' : 'Copy Trail Receipt'}
               </button>
             </div>
           </div>
         </div>
       )}
-
-      {/* 6. 500-LEVEL ATLAS MODAL */}
-      <BlueprintModal
-        isOpen={blueprintOpen}
-        onClose={() => setBlueprintOpen(false)}
-        onSelectPracticeStep={handlePracticeStep}
-        onRerollSeed={() => handleRerollSpireSeed()}
-        currentStep={Math.round(telemetry.currentStep)}
-        peakStep={Math.round(telemetry.peakStep)}
-      />
-
-      {/* 7. GLOBAL LEADERBOARD & PROFILE MODAL */}
-      <LeaderboardModal
-        isOpen={leaderboardOpen}
-        onClose={() => setLeaderboardOpen(false)}
-        firebaseUser={firebaseUser}
-        playerUid={playerUid}
-        playerHandle={playerHandle}
-        playerSkin={playerSkin}
-        playerMotto={playerMotto}
-        onUpdateProfile={handleUpdateProfile}
-        peakStep={Math.max(telemetry.peakStep, finalSnapshot.peakStep)}
-        totalFalls={Math.max(telemetry.fallsCount, finalSnapshot.fallsCount)}
-        worstFall={Math.max(
-          telemetry.biggestFallLoss,
-          finalSnapshot.biggestFallLoss
-        )}
-        rageScore={Math.max(telemetry.rageScore, finalSnapshot.rageScore)}
-      />
     </main>
   );
 }

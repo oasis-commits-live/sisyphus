@@ -1,163 +1,193 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  LEVELS_500,
   TOTAL_LEVELS,
-  PHILOSOPHICAL_ENDING_QUOTE,
+  LEVELS_500,
   generate500Levels,
+  getAtmosphericLayerForStep,
+  VALLEY_SOLID_COLLIDERS,
+  VALLEY_RIVER_BOUNDS,
+  VALLEY_BRIDGE_BOUNDS,
+  GROUND_FLOOR_Y,
+  GROUND_STEP_META,
 } from './levels';
 import {
   createInitialPlayerState,
-  computeIdealJumpToNextStep,
-  computeJumpVelocity,
-  computePredictedLandingSpot,
   advancePlayerPhysics,
-  checkVictoryPhilosophy,
+  computeJumpVelocity,
+  computeNpcPhysicalState,
+  computeNpcPovCameraRig,
+  getAutoCameraModeForStep,
+  isStepGateUnlocked,
 } from './rules';
 
-test('All 500 steps have guaranteed air gaps (zero stuck-together or overlapping steps) and change with seed', () => {
-  assert.equal(LEVELS_500.length, TOTAL_LEVELS);
-  assert.equal(TOTAL_LEVELS, 500);
+test('generate500Levels generates 500 grounded multi-element stages with varied size archetypes ascending into space', () => {
+  const levels = generate500Levels(42);
+  assert.equal(levels.length, TOTAL_LEVELS);
+  assert.equal(levels[0].stepNumber, 1);
+  assert.equal(levels[499].stepNumber, 500);
 
-  for (let i = 1; i < LEVELS_500.length; i++) {
-    const prev = LEVELS_500[i - 1];
-    const cur = LEVELS_500[i];
+  const archetypes = new Set<string>();
+  let minWidth = Infinity;
+  let maxWidth = 0;
 
-    // Must never have illogical car/train hazards on floating monoliths
-    assert.notEqual(cur.hazard as string, 'traffic');
-    assert.notEqual(cur.hazard as string, 'train');
-
-    // Consecutive platforms must have a real edge-to-edge air gap >= 1.1m
-    const centerDistXZ = Math.hypot(cur.x - prev.x, cur.z - prev.z);
-    const prevRadius = Math.max(prev.width, prev.depth) * 0.5;
-    const curRadius = Math.max(cur.width, cur.depth) * 0.5;
-    const edgeGap = centerDistXZ - (prevRadius + curRadius);
-    assert.ok(
-      edgeGap >= 1.05,
-      `Steps ${prev.stepNumber} and ${cur.stepNumber} are too close (edgeGap=${edgeGap.toFixed(2)}m)`
-    );
-
-    // Non-adjacent steps within vertical proximity (|dy| < 2.2m) must never overlap in XZ
-    const startCheck = Math.max(0, i - 25);
-    for (let j = startCheck; j < i - 1; j++) {
-      const other = LEVELS_500[j];
-      if (Math.abs(cur.y - other.y) < 2.2) {
-        const dXZ = Math.hypot(cur.x - other.x, cur.z - other.z);
-        const minAllowed =
-          curRadius + Math.max(other.width, other.depth) * 0.5 + 0.35;
-        assert.ok(
-          dXZ >= minAllowed,
-          `Step ${cur.stepNumber} overlaps non-adjacent Step ${other.stepNumber} (dXZ=${dXZ.toFixed(2)}m < ${minAllowed.toFixed(2)}m)`
-        );
-      }
+  for (let i = 0; i < levels.length; i++) {
+    archetypes.add(levels[i].stageArchetype);
+    minWidth = Math.min(minWidth, levels[i].width);
+    maxWidth = Math.max(maxWidth, levels[i].width);
+    assert.ok(levels[i].supportDepth >= 3.8, `Step ${i + 1} should have deep grounded mountain support`);
+    if (i > 0) {
+      assert.ok(levels[i].y > levels[i - 1].y, `Step ${i + 1} should be higher than step ${i}`);
     }
   }
 
-  const altSteps = generate500Levels(999111);
-  assert.notEqual(LEVELS_500[6].x, altSteps[6].x);
+  assert.ok(archetypes.size >= 5, 'Stages should permute across at least 5 distinct size/shape archetypes');
+  assert.ok(maxWidth - minWidth >= 2.2, 'Stages should have wide size variation between narrow ridges and grand sanctuaries');
+
+  const puzzleStageCount = levels.filter((s) => s.requiresSwitch && s.runePlates.length > 0).length;
+  const obstacleStageCount = levels.filter((s) => s.deckObstacles.length > 0).length;
+  assert.ok(puzzleStageCount > 180, 'Many stages should feature multi-rune gate puzzles');
+  assert.ok(obstacleStageCount > 300, 'Most stages should feature physical on-deck roadblocks');
 });
 
-test('Every single step transition (1 -> 500) is 100% mathematically reachable within 45%..86% charge', () => {
-  for (let s = 1; s < TOTAL_LEVELS; s++) {
-    const cur = LEVELS_500[s - 1];
-    const next = LEVELS_500[s];
-    const ideal = computeIdealJumpToNextStep(s, 0);
+test('getAtmosphericLayerForStep progresses from valley to deep space above step 100', () => {
+  assert.equal(getAtmosphericLayerForStep(1), 'troposphere_valley');
+  assert.equal(getAtmosphericLayerForStep(50), 'troposphere_valley');
+  assert.equal(getAtmosphericLayerForStep(75), 'alpine_cloud_deck');
+  assert.equal(getAtmosphericLayerForStep(120), 'stratosphere');
+  assert.equal(getAtmosphericLayerForStep(250), 'thermosphere_aurora');
+  assert.equal(getAtmosphericLayerForStep(420), 'deep_space');
+});
 
-    assert.ok(
-      ideal.chargeRatio >= 0.42 && ideal.chargeRatio <= 0.88,
-      `Step ${s} -> ${s + 1} has out-of-range chargeRatio ${ideal.chargeRatio} (horizGap=${next.horizGap}m, vertRise=${next.vertRise}m)`
-    );
+test('getAutoCameraModeForStep automatically rotates camera perspective every 12 steps', () => {
+  const mode0 = getAutoCameraModeForStep(0);
+  const mode11 = getAutoCameraModeForStep(11);
+  const mode12 = getAutoCameraModeForStep(12);
+  const mode24 = getAutoCameraModeForStep(24);
+  const mode36 = getAutoCameraModeForStep(36);
 
-    const pred = computePredictedLandingSpot(
-      cur.x,
-      cur.y,
-      cur.z,
-      ideal.chargeRatio,
-      ideal.aimAngle,
-      next,
-      0
-    );
-    const errXZ = Math.hypot(
-      pred.x - pred.targetCenterX,
-      pred.z - pred.targetCenterZ
-    );
-    assert.ok(
-      errXZ <= next.width * 0.38,
-      `Step ${s} -> ${s + 1} predicted landing misses target center by ${errXZ.toFixed(2)}m`
-    );
+  assert.equal(mode0, 'isometric');
+  assert.equal(mode11, 'isometric');
+  assert.notEqual(mode12, mode0);
+  assert.notEqual(mode24, mode12);
+  assert.notEqual(mode36, mode24);
+});
+
+test('solid collision prevents walking or jumping through valley buildings, stage pillars, and on-deck obstacles', () => {
+  const state = createInitialPlayerState(0);
+  const cabin = VALLEY_SOLID_COLLIDERS.find((c) => c.id === 'collider-cabin') || VALLEY_SOLID_COLLIDERS[0];
+  assert.ok(cabin, 'Valley cabin collider should exist');
+
+  // 1. Place player just outside the front (+Z) edge of the cabin and walk toward -Z into it
+  state.x = cabin.x;
+  state.z = cabin.z + cabin.halfD + 0.4;
+  state.y = GROUND_FLOOR_Y;
+
+  for (let i = 0; i < 40; i++) {
+    advancePlayerPhysics(state, 1 / 60, i / 60, 0, -1);
   }
-});
 
-test('Multi-step simulated ascent starts on the Sanctuary Ground Floor (Step 0) and cleanly vaults Ground -> Step 1 -> Step 2 -> Step 3 -> Step 4', () => {
-  const state = createInitialPlayerState();
-  assert.equal(state.currentStep, 0);
-  let simClock = 0;
+  const minAllowedZ = cabin.z + cabin.halfD + 0.25;
+  assert.ok(
+    state.z >= minAllowedZ - 0.05,
+    `Player should not walk through solid cabin (z=${state.z}, expected >= ${minAllowedZ})`
+  );
 
-  for (let targetStep = 1; targetStep <= 4; targetStep++) {
-    const fromStep = targetStep - 1;
-    const ideal = computeIdealJumpToNextStep(fromStep, simClock);
-    const jumpVel = computeJumpVelocity(ideal.chargeRatio, ideal.aimAngle);
+  // 2. Test on-deck boulder/totem obstacle collision on a stage
+  const stageWithObs = LEVELS_500.find((s) => s.deckObstacles.length > 0 && s.hazard === 'none') || LEVELS_500[1];
+  const obs = stageWithObs.deckObstacles[0];
+  const stageState = createInitialPlayerState(stageWithObs.stepNumber);
+  stageState.x = stageWithObs.x + obs.relX;
+  stageState.z = stageWithObs.z + obs.relZ + obs.halfD + 0.42;
+  stageState.y = stageWithObs.y;
 
-    state.aimAngle = ideal.aimAngle;
-    state.vx = jumpVel.vx;
-    state.vy = jumpVel.vy;
-    state.vz = jumpVel.vz;
-    state.grounded = false;
-
-    let landedOnTarget = false;
-    for (let f = 0; f < 90; f++) {
-      simClock += 1 / 60;
-      const res = advancePlayerPhysics(state, 1 / 60, simClock, 0, 0);
-      if (res.landedStep === targetStep) {
-        landedOnTarget = true;
-        break;
-      }
-    }
-
-    assert.equal(
-      landedOnTarget,
-      true,
-      `Failed to land on Step ${targetStep} from Step ${fromStep} (ended at y=${state.y.toFixed(2)}, step=${state.currentStep})`
-    );
-    assert.equal(state.currentStep, targetStep);
+  for (let i = 0; i < 35; i++) {
+    advancePlayerPhysics(stageState, 1 / 60, i / 60, 0, -1);
   }
-  assert.equal(state.coinsCollected, 20);
+
+  const distToObsZ = Math.abs(stageState.z - (stageWithObs.z + obs.relZ));
+  assert.ok(
+    distToObsZ >= obs.halfD + 0.25,
+    `Player should be physically blocked by on-deck obstacle (distZ=${distToObsZ})`
+  );
 });
 
-test('Falling off an upper monolith step lands logically on a lower tier and mutates upper steps', () => {
-  const state = createInitialPlayerState();
-  const step4 = LEVELS_500[3];
-  state.currentStep = 4;
-  state.peakStep = 4;
-  state.lastStableStep = 4;
-  state.x = step4.x + step4.width * 0.5 + 0.35;
-  state.y = step4.y + 0.35;
-  state.z = step4.z;
-  state.vx = 0.25;
-  state.vy = -1.5;
-  state.vz = 0;
+test('river water channel and arched bridge physics behave realistically', () => {
+  const state = createInitialPlayerState(0);
+
+  // 1. Place player on the cedar bridge
+  state.x = (VALLEY_BRIDGE_BOUNDS.minX + VALLEY_BRIDGE_BOUNDS.maxX) * 0.5;
+  state.z = (VALLEY_BRIDGE_BOUNDS.minZ + VALLEY_BRIDGE_BOUNDS.maxZ) * 0.5;
+  state.y = VALLEY_BRIDGE_BOUNDS.deckY;
+  advancePlayerPhysics(state, 1 / 60, 0.1, 0, 0);
+  assert.equal(state.onRiverBridge, true);
+  assert.equal(state.inRiverWater, false);
+  assert.ok(state.y > GROUND_FLOOR_Y, 'Bridge deck should elevate player above valley floor');
+
+  // 2. Place player in the river water away from the bridge
+  state.x = -5.0;
+  state.z = (VALLEY_RIVER_BOUNDS.minZ + VALLEY_RIVER_BOUNDS.maxZ) * 0.5;
+  state.y = VALLEY_RIVER_BOUNDS.waterSurfaceY;
+  const startX = state.x;
+  for (let i = 0; i < 20; i++) {
+    advancePlayerPhysics(state, 1 / 60, i / 60, 0, 0);
+  }
+  assert.equal(state.inRiverWater, true);
+  assert.equal(state.onRiverBridge, false);
+  assert.ok(state.x > startX + 0.2, 'River current should push wading player downstream along +X');
+});
+
+test('multi-rune stage gate blocks front launch edge until all runes on that stage are stepped on', () => {
+  const lockedStep = LEVELS_500.find((s) => s.requiresSwitch && s.runePlates.length >= 2)!;
+  assert.ok(lockedStep, 'Should find a multi-rune locked stage');
+
+  const state = createInitialPlayerState(lockedStep.stepNumber);
+  assert.equal(isStepGateUnlocked(lockedStep, state), false);
+
+  // Step onto each rune plate on the stage
+  for (const rune of lockedStep.runePlates) {
+    state.x = lockedStep.x + rune.relX;
+    state.z = lockedStep.z + rune.relZ;
+    advancePlayerPhysics(state, 1 / 60, 0, 0, 0);
+  }
+
+  assert.equal(isStepGateUnlocked(lockedStep, state), true, 'Stage gate should unlock after activating all rune plates');
+});
+
+test('logical gravity fall lands naturally on lower surface without random teleportation', () => {
+  const step10 = LEVELS_500[9];
+  const state = createInitialPlayerState(10);
+
+  // Position player in mid-air at a known (X, Z) away from upper terraces so they fall straight down to the valley floor
+  state.x = 11.5;
+  state.z = 6.5;
+  state.y = step10.y;
   state.grounded = false;
+  state.vx = 0;
+  state.vz = 0;
 
-  let fell = false;
-  for (let i = 0; i < 180; i++) {
-    const res = advancePlayerPhysics(state, 1 / 60, i / 60, 0, 0);
-    if (res.fellToLowerStep) {
-      fell = true;
-      break;
-    }
+  const expectedX = state.x;
+  const expectedZ = state.z;
+
+  for (let i = 0; i < 240; i++) {
+    advancePlayerPhysics(state, 1 / 60, i / 60, 0, 0);
+    if (state.grounded) break;
   }
 
-  assert.equal(fell, true);
-  assert.ok(state.currentStep < 4);
-  assert.equal(state.fallsCount, 1);
-  assert.equal(state.spireMutations, 1);
+  assert.equal(state.grounded, true);
+  assert.equal(state.currentStep, 0);
+  assert.ok(Math.abs(state.x - expectedX) < 0.8, 'Fall should preserve physical X coordinate instead of random teleport');
+  assert.ok(Math.abs(state.z - expectedZ) < 0.8, 'Fall should preserve physical Z coordinate instead of random teleport');
 });
 
-test('Step 500 triggers the exact philosophical ending quote', () => {
-  const check499 = checkVictoryPhilosophy(499);
-  assert.equal(check499.isVictory, false);
+test('pure jump vault launches player upward and computeNpcPovCameraRig frames NPC conversation', () => {
+  const state = createInitialPlayerState(0);
+  const vel = computeJumpVelocity(0.65, state.aimAngle);
+  assert.ok(vel.vy > 4, 'Jump vault should impart positive vertical velocity');
 
-  const check500 = checkVictoryPhilosophy(500);
-  assert.equal(check500.isVictory, true);
-  assert.equal(check500.message, PHILOSOPHICAL_ENDING_QUOTE);
+  const npcPhys = computeNpcPhysicalState(GROUND_STEP_META, state, 1.0);
+  assert.ok(npcPhys, 'Base camp NPC physical state should exist');
+  const rig = computeNpcPovCameraRig(state, npcPhys!, GROUND_FLOOR_Y, 1.5);
+  assert.ok(Number.isFinite(rig.camPosX) && Number.isFinite(rig.camPosY) && Number.isFinite(rig.camPosZ));
+  assert.ok(Number.isFinite(rig.lookAtX) && Number.isFinite(rig.lookAtY) && Number.isFinite(rig.lookAtZ));
 });
