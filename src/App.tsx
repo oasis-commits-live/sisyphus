@@ -393,6 +393,20 @@ export default function App() {
           setNpcReplyLine(null);
           return;
         }
+        if (
+          e.code === 'Digit1' ||
+          e.code === 'Digit2' ||
+          e.code === 'Digit3' ||
+          e.code === 'Digit4'
+        ) {
+          const numIdx = Number(e.code.replace('Digit', '')) - 1;
+          if (numIdx >= 0 && numIdx < choicesList.length) {
+            e.preventDefault();
+            setSelectedChoiceIdx(numIdx);
+            handleSelectDialogueChoice(choicesList[numIdx]);
+            return;
+          }
+        }
         if (e.code === 'ArrowDown' || e.code === 'KeyS') {
           e.preventDefault();
           setSelectedChoiceIdx((i) => (i + 1) % choicesList.length);
@@ -405,7 +419,7 @@ export default function App() {
           );
           return;
         }
-        if (e.code === 'Enter') {
+        if (e.code === 'Enter' || e.code === 'Space') {
           e.preventDefault();
           handleSelectDialogueChoice(
             choicesList[selectedChoiceIdx] || choicesList[0]
@@ -521,9 +535,13 @@ export default function App() {
           className="fixed inset-0 z-20 flex flex-col justify-between p-3 sm:p-5 pointer-events-none overflow-hidden select-none"
           style={{
             background:
-              'radial-gradient(circle at 50% 45%, rgba(254,243,199,0.0) 0%, rgba(20,13,8,0.12) 68%, rgba(12,8,4,0.48) 100%)',
+              'radial-gradient(circle at 50% 42%, rgba(254,243,199,0.0) 0%, rgba(16,12,8,0.14) 64%, rgba(10,7,4,0.52) 100%)',
           }}
         >
+          {/* Atmospheric Drifting Alpine Mist Layers (CSS-animated for scale & isolation during the mountain steps sweep) */}
+          <div className="title-mist-ribbon-a absolute inset-x-[-15%] top-[18%] h-[38%] z-0" />
+          <div className="title-mist-ribbon-b absolute inset-x-[-15%] bottom-[14%] h-[34%] z-0" />
+
           {/* TOP BAR: FANCY "HAWK PEAK 500" EMBLEM (Left) & AUDIO TOGGLE (Right) */}
           <div className="relative z-10 flex items-center justify-between gap-3 pointer-events-auto shrink-0">
             <div className="flex items-center gap-3 min-w-0">
@@ -998,97 +1016,118 @@ export default function App() {
             </div>
           )}
 
-          {/* PLAYER POV NPC CONVERSATION DIALOGUE OVERLAY */}
+          {/* WITCHER 3 STYLE FRAMELESS OVER-THE-SHOULDER NPC DIALOGUE HUD:
+              - Unobstructed 3D characters (Player on left, NPC on right-center)
+              - Bottom-right numbered bracketed choices + golden diamond status bar
+              - Centered frameless spoken subtitle line at the bottom */}
           {activeDialogueNpc && activeDialogueContext && (
             <div
               role="dialog"
               aria-label={`POV Conversation with ${activeDialogueNpc.name}`}
-              className="fixed bottom-6 left-1/2 -translate-x-1/2 z-30 w-[92vw] max-w-lg pointer-events-auto"
+              className="fixed inset-0 z-30 pointer-events-none flex flex-col justify-end select-none"
+              style={{
+                background:
+                  'linear-gradient(to top, rgba(5, 4, 3, 0.88) 0%, rgba(8, 6, 4, 0.46) 24%, rgba(8, 6, 4, 0.0) 52%)',
+              }}
             >
-              <div className="relative bg-[#f1f5f9]/95 backdrop-blur-md text-[#1e293b] p-4 sm:p-5 rounded-2xl border-[3px] border-[#1e293b] shadow-2xl space-y-3">
-                <div className="flex flex-wrap items-center justify-between gap-2 border-b-2 border-slate-300 pb-2">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-xs font-mono-tabular font-black uppercase text-[#b45309]">
-                      POV CAM · {activeDialogueNpc.name} ({activeDialogueNpc.role})
-                    </span>
+              {/* Bottom-Right Choice Cluster + Witcher-Style Golden Diamond Status Bar */}
+              <div className="w-full px-4 sm:px-10 md:px-16 pb-4 sm:pb-6 flex flex-col sm:flex-row items-end sm:items-center justify-end gap-4 sm:gap-8 pointer-events-auto">
+                {/* Left of choices: Witcher-3 "Time left to decide" style status bar & golden diamond emblem */}
+                <div className="flex flex-col items-end sm:items-center gap-1.5 shrink-0">
+                  <div className="flex items-center gap-2">
                     <span
                       data-testid="npc-stance-badge"
-                      className={`text-[10px] font-mono-tabular font-extrabold uppercase px-2 py-0.5 rounded border ${
-                        activeDialogueContext.isBlockingNow
-                          ? 'bg-rose-100 text-rose-800 border-rose-400'
-                          : activeDialogueNpc.blocksPathByDefault
-                          ? 'bg-emerald-100 text-emerald-800 border-emerald-400'
-                          : 'bg-amber-100 text-amber-900 border-amber-400'
-                      }`}
+                      className="text-xs sm:text-sm font-semibold tracking-wide text-[#f8fafc] witcher-subtitle-text"
                     >
                       {activeDialogueContext.isBlockingNow
-                        ? `BLOCKING STAGE ${telemetry.currentStep}`
+                        ? `Blocking Stage ${telemetry.currentStep} · Decide`
                         : activeDialogueNpc.blocksPathByDefault
-                        ? 'LANE CLEARED'
-                        : `STAGE ${telemetry.currentStep} SCOUT`}
+                        ? 'Launch Lane Cleared'
+                        : `${activeDialogueNpc.name} · ${activeDialogueNpc.role}`}
                     </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActiveDialogueNpc(null);
+                        setNpcReplyLine(null);
+                      }}
+                      className="text-[11px] font-mono-tabular font-bold text-amber-300/85 hover:text-amber-200 witcher-subtitle-text cursor-pointer"
+                    >
+                      [ESC]
+                    </button>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setActiveDialogueNpc(null);
-                      setNpcReplyLine(null);
-                    }}
-                    className="text-xs font-black text-slate-500 hover:text-slate-900 cursor-pointer"
-                  >
-                    [ESC]
-                  </button>
+
+                  {/* Golden Diamond Icon + Horizontal Amber Bar */}
+                  <div className="flex items-center gap-2">
+                    <svg
+                      viewBox="0 0 24 24"
+                      className="w-5 h-5 shrink-0 drop-shadow-[0_2px_4px_rgba(0,0,0,0.95)]"
+                    >
+                      <polygon
+                        points="12,2 22,12 12,22 2,12"
+                        fill="#1c1309"
+                        stroke="#fbbf24"
+                        strokeWidth="2.2"
+                      />
+                      <polygon
+                        points="12,6 18,12 12,18 6,12"
+                        fill="#f59e0b"
+                      />
+                    </svg>
+                    <div className="w-36 sm:w-44 h-2 bg-black/80 border border-amber-500/40 overflow-hidden">
+                      <div
+                        className={`h-full transition-all duration-300 ${
+                          activeDialogueContext.isBlockingNow
+                            ? 'w-[72%] bg-gradient-to-r from-amber-500 to-yellow-400'
+                            : 'w-full bg-gradient-to-r from-amber-400 to-yellow-300'
+                        }`}
+                      />
+                    </div>
+                  </div>
                 </div>
 
-                <p className="text-sm sm:text-base font-bold text-slate-800 leading-relaxed">
-                  &ldquo;{npcReplyLine || activeDialogueContext.greeting}&rdquo;
-                </p>
-
-                <div className="space-y-1.5 pt-1">
+                {/* Bottom-Right Numbered Bracketed Dialogue Choices */}
+                <div className="flex flex-col items-start gap-1 w-full sm:w-auto min-w-[260px] sm:min-w-[330px] max-w-md">
                   {activeDialogueContext.dynamicChoices.map((ch, idx) => {
                     const isSelected = idx === selectedChoiceIdx;
+                    const formattedChoice =
+                      ch.label.charAt(0).toUpperCase() + ch.label.slice(1);
                     return (
                       <button
                         key={ch.label}
                         type="button"
                         data-testid={`npc-choice-${ch.action}`}
+                        onMouseEnter={() => setSelectedChoiceIdx(idx)}
                         onClick={() => {
                           setSelectedChoiceIdx(idx);
                           handleSelectDialogueChoice(ch);
                         }}
-                        className={`w-full text-left px-3 py-1.5 rounded-xl font-display text-sm sm:text-lg font-black flex items-center gap-2.5 transition-colors cursor-pointer ${
+                        className={`w-full text-left px-3 py-1 text-sm sm:text-base font-semibold tracking-wide flex items-center gap-2 cursor-pointer ${
                           isSelected
-                            ? 'bg-white text-[#0f172a] shadow-sm'
-                            : 'text-slate-500 hover:text-slate-800'
+                            ? 'witcher-choice-row-active'
+                            : 'witcher-choice-row'
                         }`}
                       >
-                        <span className="text-[#1e3a8a] text-base sm:text-xl w-5">
+                        <span className="w-4 text-[#fbbf24] text-sm sm:text-base shrink-0">
                           {isSelected ? '▸' : ''}
                         </span>
                         <span>
-                          {ch.highlightWord &&
-                          ch.label.includes(ch.highlightWord) ? (
-                            <>
-                              {ch.label.slice(
-                                0,
-                                ch.label.indexOf(ch.highlightWord)
-                              )}
-                              <span className="text-[#dc2626]">
-                                {ch.highlightWord}
-                              </span>
-                              {ch.label.slice(
-                                ch.label.indexOf(ch.highlightWord) +
-                                  ch.highlightWord.length
-                              )}
-                            </>
-                          ) : (
-                            ch.label
-                          )}
+                          {idx + 1}. [{formattedChoice}]
                         </span>
                       </button>
                     );
                   })}
                 </div>
+              </div>
+
+              {/* Bottom-Center Frameless Spoken Subtitle Line */}
+              <div className="w-full px-4 sm:px-12 pb-5 sm:pb-7 text-center pointer-events-auto">
+                <p className="mx-auto max-w-3xl text-sm sm:text-lg font-medium leading-relaxed witcher-subtitle-text">
+                  <span className="text-[#fbbf24] font-semibold">
+                    {activeDialogueNpc.name}:{' '}
+                  </span>
+                  {npcReplyLine || activeDialogueContext.greeting}
+                </p>
               </div>
             </div>
           )}

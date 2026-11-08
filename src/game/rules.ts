@@ -533,19 +533,25 @@ export function computeNpcPovCameraRig(
   const dist = Math.max(0.6, Math.hypot(dx, dz));
   const dirX = dx / dist;
   const dirZ = dz / dist;
-  // Right-hand perpendicular vector for a cinematic over-the-shoulder POV offset
+  // Screen-right perpendicular vector (F x Up) for Witcher-3 over-the-shoulder framing
   const rightX = -dirZ;
   const rightZ = dirX;
 
-  const breath = Math.sin(elapsedTime * 2.2) * 0.04;
-  // Place camera just behind and above the player's right shoulder looking directly at the NPC's face
-  const camPosX = player.x - dirX * 3.2 + rightX * 1.35;
-  const camPosY = Math.max(player.y, npcStepY) + 2.35 + breath;
-  const camPosZ = player.z - dirZ * 3.2 + rightZ * 1.35;
+  const baseY = Math.max(player.y, npcStepY);
+  const breath = Math.sin(elapsedTime * 2.1) * 0.035;
 
-  const lookAtX = npcPhys.worldX - dirX * 0.15;
-  const lookAtY = npcStepY + 0.68 + npcPhys.hopOffsetY * 0.5;
-  const lookAtZ = npcPhys.worldZ - dirZ * 0.15;
+  // Position camera behind the player's right shoulder at intimate eye-level height
+  // so the player's back/shoulder sits on the left and the NPC faces us on the right-center
+  const camPosX = player.x - dirX * 5.2 + rightX * 1.68;
+  const camPosY = baseY + 1.52 + breath;
+  const camPosZ = player.z - dirZ * 5.2 + rightZ * 1.68;
+
+  const midX = player.x * 0.44 + npcPhys.worldX * 0.56;
+  const midZ = player.z * 0.44 + npcPhys.worldZ * 0.56;
+
+  const lookAtX = midX + rightX * 0.24;
+  const lookAtY = baseY + 0.54 + npcPhys.hopOffsetY * 0.35;
+  const lookAtZ = midZ + rightZ * 0.24;
 
   return {
     camPosX,
@@ -554,7 +560,7 @@ export function computeNpcPovCameraRig(
     lookAtX,
     lookAtY,
     lookAtZ,
-    zoom: 2.35,
+    zoom: 3.12,
   };
 }
 

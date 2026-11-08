@@ -294,3 +294,121 @@
     text-shadow: 0 2px 0 #1c1008;
   }
 }
+
+/* ============================================================================
+   5. TITLE SCREEN CINEMATIC CAMERA SWEEP & ATMOSPHERIC MOUNTAIN MIST (CSS)
+   ============================================================================ */
+@keyframes titleCanvasPan {
+  0% {
+    transform: scale(1.035) translate3d(-0.8%, 0.6%, 0);
+  }
+  50% {
+    transform: scale(1.06) translate3d(0.9%, -0.8%, 0);
+  }
+  100% {
+    transform: scale(1.035) translate3d(-0.8%, 0.6%, 0);
+  }
+}
+
+.title-cinematic-canvas-sweep {
+  animation: titleCanvasPan 22s cubic-bezier(0.45, 0.05, 0.55, 0.95) infinite;
+  will-change: transform;
+}
+
+@keyframes mountainMistDriftA {
+  0% {
+    transform: translate3d(-12%, 0, 0) scaleY(1);
+    opacity: 0.22;
+  }
+  50% {
+    transform: translate3d(8%, -6px, 0) scaleY(1.08);
+    opacity: 0.36;
+  }
+  100% {
+    transform: translate3d(-12%, 0, 0) scaleY(1);
+    opacity: 0.22;
+  }
+}
+
+@keyframes mountainMistDriftB {
+  0% {
+    transform: translate3d(10%, 4px, 0) scaleY(1.04);
+    opacity: 0.18;
+  }
+  50% {
+    transform: translate3d(-10%, -4px, 0) scaleY(0.96);
+    opacity: 0.3;
+  }
+  100% {
+    transform: translate3d(10%, 4px, 0) scaleY(1.04);
+    opacity: 0.18;
+  }
+}
+
+.title-mist-ribbon-a {
+  background: radial-gradient(
+    ellipse 65% 42% at 50% 55%,
+    rgba(240, 249, 255, 0.42) 0%,
+    rgba(186, 230, 253, 0.16) 48%,
+    rgba(15, 23, 42, 0) 100%
+  );
+  animation: mountainMistDriftA 18s ease-in-out infinite;
+  pointer-events: none;
+}
+
+.title-mist-ribbon-b {
+  background: radial-gradient(
+    ellipse 58% 36% at 45% 50%,
+    rgba(254, 243, 199, 0.34) 0%,
+    rgba(125, 211, 252, 0.12) 52%,
+    rgba(15, 23, 42, 0) 100%
+  );
+  animation: mountainMistDriftB 24s ease-in-out infinite;
+  pointer-events: none;
+}
+
+/* ============================================================================
+   6. WITCHER 3 FRAMELESS BOTTOM-RIGHT DIALOGUE & SUBTITLE HUD
+   ============================================================================ */
+.witcher-subtitle-text {
+  color: #f8fafc;
+  text-shadow:
+    0 2px 3px rgba(0, 0, 0, 0.98),
+    0 0 10px rgba(0, 0, 0, 0.92),
+    0 0 22px rgba(0, 0, 0, 0.85);
+}
+
+.witcher-choice-row {
+  color: rgba(245, 194, 96, 0.86);
+  text-shadow:
+    0 2px 3px rgba(0, 0, 0, 0.98),
+    0 0 10px rgba(0, 0, 0, 0.9);
+  background: linear-gradient(
+    90deg,
+    rgba(12, 9, 6, 0.42) 0%,
+    rgba(12, 9, 6, 0.25) 65%,
+    rgba(12, 9, 6, 0) 100%
+  );
+  transition: transform 110ms ease, color 110ms ease, background 120ms ease;
+}
+
+.witcher-choice-row:hover {
+  color: #fde047;
+  transform: translateX(3px);
+}
+
+.witcher-choice-row-active {
+  color: #fbbf24;
+  text-shadow:
+    0 2px 4px rgba(0, 0, 0, 0.98),
+    0 0 14px rgba(245, 158, 11, 0.45),
+    0 0 20px rgba(0, 0, 0, 0.95);
+  background: linear-gradient(
+    90deg,
+    rgba(245, 158, 11, 0.22) 0%,
+    rgba(15, 10, 6, 0.65) 45%,
+    rgba(15, 10, 6, 0) 100%
+  );
+  border-left: 2.5px solid #fbbf24;
+}
+

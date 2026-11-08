@@ -3416,12 +3416,24 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
       baseCampGroup.visible = p.y < 36 || isTitlePreviewRef.current;
       atmosphereGroup.visible = p.currentStep >= 32 && !isTitlePreviewRef.current;
 
-      // Update Visible Stages around Player
+      // Update Visible Stages around Player (and Starting Mountain Steps during Title Sweep with foreground-pillar culling!)
+      const titleSweepProgress = isTitlePreviewRef.current
+        ? 0.5 - 0.5 * Math.cos(elapsedTime * 0.28)
+        : 0;
+      const titleFocusStep = isTitlePreviewRef.current
+        ? Math.round(titleSweepProgress * 4)
+        : p.currentStep;
+
       const minVis = Math.max(1, p.currentStep - 12);
       const maxVis = Math.min(
         TOTAL_LEVELS,
-        p.currentStep + (vistaOverviewRef.current ? 48 : 7)
+        isTitlePreviewRef.current
+          ? titleFocusStep + 3
+          : p.currentStep + (vistaOverviewRef.current ? 48 : 7)
       );
+
+      const refX = isTitlePreviewRef.current ? camFocusX : p.x;
+      const refZ = isTitlePreviewRef.current ? camFocusZ : p.z;
 
       for (let i = 0; i < stepEntries.length; i++) {
         const entry = stepEntries[i];
@@ -3430,12 +3442,12 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
         if (
           isVis &&
           !vistaOverviewRef.current &&
-          sNum > p.currentStep + 2
+          sNum > titleFocusStep + 2
         ) {
-          const toCamX = currentCamPosX - p.x;
-          const toCamZ = currentCamPosZ - p.z;
-          const toStepX = entry.step.x - p.x;
-          const toStepZ = entry.step.z - p.z;
+          const toCamX = currentCamPosX - refX;
+          const toCamZ = currentCamPosZ - refZ;
+          const toStepX = entry.step.x - refX;
+          const toStepZ = entry.step.z - refZ;
           const dotCam = toCamX * toStepX + toCamZ * toStepZ;
           if (dotCam > 10.0) {
             isVis = false;
@@ -3584,10 +3596,14 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
       }
 
       // ============================================================================
-      // 3D DIRECTIONAL JUMP GUIDE ARC & TARGET RETICLE (Always Shows Jump Direction!)
+      // 3D DIRECTIONAL JUMP GUIDE ARC & TARGET RETICLE (Hidden on Title & NPC POV Dialogue)
       // ============================================================================
+      const showGameplayReticle =
+        !isTitlePreviewRef.current &&
+        !activeDialogueNpcRef.current &&
+        p.grounded;
       aimArrowGroup.rotation.y = -p.aimAngle;
-      aimArrowGroup.visible = !isTitlePreviewRef.current && p.grounded;
+      aimArrowGroup.visible = showGameplayReticle;
 
       const nextStepIdx = Math.max(
         0,
@@ -3595,7 +3611,7 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
       );
       const nextStep = LEVELS_500[nextStepIdx] || LEVELS_500[0];
 
-      if (!isTitlePreviewRef.current && p.grounded) {
+      if (showGameplayReticle) {
         const alignNow = computeAimAlignment(
           p.x,
           p.y,
@@ -3692,23 +3708,47 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
       dampedPointerY += (pointerNormY - dampedPointerY) * Math.min(1, dt * 4.5);
 
       if (isTitlePreviewRef.current) {
-        // Active Cinematic Orbiting Camera Tour + Responsive Mouse Parallax (Unobstructed 14-unit standoff)
-        const tourPhase = elapsedTime * 0.36;
-        const orbitX = Math.sin(tourPhase) * 1.85 + dampedPointerX * 1.25;
-        const orbitY = Math.cos(tourPhase * 0.75) * 0.38 - dampedPointerY * 0.45;
-        const orbitZ = Math.cos(tourPhase) * 1.15;
+        // Cinematic Camera Sweep Across the Starting Mountain Steps (Base Camp -> Bridge -> Stages 1..4)
+        // Smooth cosine-eased ascent and descent showcasing the scale & isolation of Hawk Peak
+        const sweepWaypoints = [
+          { x: GROUND_SPAWN_X + 0.2, y: GROUND_FLOOR_Y + 0.85, z: GROUND_SPAWN_Z - 1.1 },
+          { x: LEVELS_500[0].x * 0.75, y: LEVELS_500[0].y + 0.45, z: LEVELS_500[0].z * 0.85 },
+          { x: LEVELS_500[1].x * 0.85, y: LEVELS_500[1].y + 0.55, z: LEVELS_500[1].z * 0.85 },
+          { x: LEVELS_500[2].x * 0.85, y: LEVELS_500[2].y + 0.65, z: LEVELS_500[2].z * 0.85 },
+          { x: LEVELS_500[3].x * 0.85, y: LEVELS_500[3].y + 0.75, z: LEVELS_500[3].z * 0.85 },
+        ];
+        const sweepProgress = 0.5 - 0.5 * Math.cos(elapsedTime * 0.28);
+        const scaledIdx = sweepProgress * (sweepWaypoints.length - 1);
+        const idxA = Math.floor(scaledIdx);
+        const idxB = Math.min(sweepWaypoints.length - 1, idxA + 1);
+        const localT = scaledIdx - idxA;
+        const segEase = localT * localT * (3 - 2 * localT);
 
-        camera.position.set(
-          GROUND_SPAWN_X + 8.8 + orbitX,
-          GROUND_FLOOR_Y + 5.8 + orbitY,
-          GROUND_SPAWN_Z + 9.6 + orbitZ
-        );
-        camera.lookAt(
-          GROUND_SPAWN_X + 0.15 + Math.sin(tourPhase * 0.5) * 0.75 + dampedPointerX * 0.45,
-          GROUND_FLOOR_Y + 0.85 + Math.sin(tourPhase * 0.8) * 0.22 - dampedPointerY * 0.22,
-          GROUND_SPAWN_Z - 1.15 + Math.cos(tourPhase * 0.5) * 0.55
-        );
-        camera.zoom = 2.38 + Math.sin(tourPhase * 0.6) * 0.12;
+        const wpA = sweepWaypoints[idxA];
+        const wpB = sweepWaypoints[idxB];
+        const targetSweepX = wpA.x + (wpB.x - wpA.x) * segEase + dampedPointerX * 0.85;
+        const targetSweepY = wpA.y + (wpB.y - wpA.y) * segEase - dampedPointerY * 0.35;
+        const targetSweepZ = wpA.z + (wpB.z - wpA.z) * segEase;
+
+        camFocusX += (targetSweepX - camFocusX) * Math.min(1, dt * 4.2);
+        camFocusY += (targetSweepY - camFocusY) * Math.min(1, dt * 4.2);
+        camFocusZ += (targetSweepZ - camFocusZ) * Math.min(1, dt * 4.2);
+
+        const tourPhase = elapsedTime * 0.34;
+        const orbitX = Math.sin(tourPhase) * 1.65 + dampedPointerX * 1.15;
+        const orbitY = Math.cos(tourPhase * 0.75) * 0.35 - dampedPointerY * 0.4;
+        const orbitZ = Math.cos(tourPhase) * 1.05;
+
+        currentCamPosX = camFocusX + 8.8 + orbitX;
+        currentCamPosY = camFocusY + 5.8 + sweepProgress * 1.4 + orbitY;
+        currentCamPosZ = camFocusZ + 9.6 + orbitZ;
+
+        camera.position.set(currentCamPosX, currentCamPosY, currentCamPosZ);
+        camera.lookAt(camFocusX, camFocusY, camFocusZ);
+
+        // Zoom out gently as the camera sweeps up the starting mountain steps to reveal peak scale & isolation
+        const targetSweepZoom = 2.36 - sweepProgress * 0.52;
+        camera.zoom += (targetSweepZoom - camera.zoom) * Math.min(1, dt * 4.2);
         camera.updateProjectionMatrix();
       } else if (activeDialogueNpcRef.current) {
         const near = findNearbyNpc(p, elapsedTime);
@@ -3728,20 +3768,30 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
             : LEVELS_500[Math.max(0, p.currentStep - 1)].y);
 
         if (npcPhys) {
+          // Turn the player to face the NPC for the Witcher-3 over-the-shoulder two-shot
+          const faceNpcAngle = Math.atan2(
+            npcPhys.worldZ - p.z,
+            npcPhys.worldX - p.x
+          );
+          playerVisual.rotation.y = -faceNpcAngle;
+          playerVisual.position.y = Math.abs(Math.sin(elapsedTime * 2.4)) * 0.025;
+
           const pov = computeNpcPovCameraRig(p, npcPhys, npcStepY, elapsedTime);
-          currentCamPosX +=
-            (pov.camPosX - currentCamPosX) * Math.min(1, dt * 6);
-          currentCamPosY +=
-            (pov.camPosY - currentCamPosY) * Math.min(1, dt * 6);
-          currentCamPosZ +=
-            (pov.camPosZ - currentCamPosZ) * Math.min(1, dt * 6);
-          camFocusX += (pov.lookAtX - camFocusX) * Math.min(1, dt * 8);
-          camFocusY += (pov.lookAtY - camFocusY) * Math.min(1, dt * 8);
-          camFocusZ += (pov.lookAtZ - camFocusZ) * Math.min(1, dt * 8);
+          const snapDist = Math.hypot(
+            pov.camPosX - currentCamPosX,
+            pov.camPosZ - currentCamPosZ
+          );
+          const camRate = snapDist > 3.5 ? 1.0 : Math.min(1, dt * 16);
+          currentCamPosX += (pov.camPosX - currentCamPosX) * camRate;
+          currentCamPosY += (pov.camPosY - currentCamPosY) * camRate;
+          currentCamPosZ += (pov.camPosZ - currentCamPosZ) * camRate;
+          camFocusX += (pov.lookAtX - camFocusX) * camRate;
+          camFocusY += (pov.lookAtY - camFocusY) * camRate;
+          camFocusZ += (pov.lookAtZ - camFocusZ) * camRate;
 
           camera.position.set(currentCamPosX, currentCamPosY, currentCamPosZ);
           camera.lookAt(camFocusX, camFocusY, camFocusZ);
-          camera.zoom += (pov.zoom - camera.zoom) * Math.min(1, dt * 6);
+          camera.zoom += (pov.zoom - camera.zoom) * camRate;
           camera.updateProjectionMatrix();
         }
       } else {
@@ -3801,9 +3851,20 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
       skyBackdropMesh.quaternion.copy(camera.quaternion);
       skyBackdropMesh.scale.setScalar(1 / Math.max(0.45, camera.zoom));
 
-      // Update Directional Sun Shadow Target & MatrixWorld so Shadows Track Player!
-      dirLight.position.set(p.x + 18, p.y + 30, p.z + 15);
-      dirLight.target.position.set(p.x, p.y, p.z);
+      // Update Directional Sun Shadow Target & MatrixWorld so Shadows Track Camera Sweep or Player!
+      const shadowAnchorX = isTitlePreviewRef.current ? camFocusX : p.x;
+      const shadowAnchorY = isTitlePreviewRef.current ? camFocusY : p.y;
+      const shadowAnchorZ = isTitlePreviewRef.current ? camFocusZ : p.z;
+      dirLight.position.set(
+        shadowAnchorX + 18,
+        shadowAnchorY + 30,
+        shadowAnchorZ + 15
+      );
+      dirLight.target.position.set(
+        shadowAnchorX,
+        shadowAnchorY,
+        shadowAnchorZ
+      );
       dirLight.target.updateMatrixWorld();
 
       if (composer && !isSoftwareGl) {
@@ -3968,7 +4029,9 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
   return (
     <div
       ref={containerRef}
-      className="relative w-full h-full select-none overflow-hidden cursor-pointer"
+      className={`relative w-full h-full select-none overflow-hidden cursor-pointer ${
+        isTitlePreview ? 'title-cinematic-canvas-sweep' : ''
+      }`}
     />
   );
 };
