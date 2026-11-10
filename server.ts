@@ -2,9 +2,29 @@ import express from 'express';
 import { createServer as createViteServer } from 'vite';
 import fs from 'fs';
 import path from 'path';
+import { GoogleGenAI } from '@google/genai';
+import {
+  buildOfflineFallRoast,
+  buildOfflineNpcReply,
+} from './src/game/rules';
 
 const PORT = 3000;
 const DATA_FILE = path.resolve(process.cwd(), '.leaderboard-store.json');
+
+function getGeminiClient(): GoogleGenAI | null {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey || apiKey === 'undefined' || apiKey.trim() === '') {
+    return null;
+  }
+  return new GoogleGenAI({
+    apiKey,
+    httpOptions: {
+      headers: {
+        'User-Agent': 'aistudio-build',
+      },
+    },
+  });
+}
 
 export interface StoredPlayerRecord {
   uid: string;
@@ -126,6 +146,166 @@ let leaderboardStore: StoredPlayerRecord[] = loadStore();
 async function startServer() {
   const app = express();
   app.use(express.json());
+
+  // 1. POST /api/narrator/fall-roast - Gemini AI Live Narrator & Fall Roasts
+  app.post('/api/narrator/fall-roast', async (req, res) => {
+    const body = req.body || {};
+    const fromStep = Math.max(0, Math.min(500, Number(body.fromStep) || 0));
+    const toStep = Math.max(0, Math.min(500, Number(body.toStep) || 0));
+    const stepsLost = Math.max(
+      0,
+      Math.min(500, Number(body.stepsLost) ?? Math.max(0, fromStep - toStep))
+    );
+    const fallDropMeters = Math.max(
+      0,
+      Number(Number(body.fallDropMeters || stepsLost * 0.85).toFixed(2))
+    );
+    const rageScore = Math.max(0, Math.min(100, Number(body.rageScore) || 0));
+    const fallsCount = Math.max(1, Number(body.fallsCount) || 1);
+    const outfitName = String(body.outfitName || 'Crimson Wayfarer').slice(0, 40);
+
+    const fallback = buildOfflineFallRoast({
+      fromStep,
+      toStep,
+      stepsLost,
+      fallDropMeters,
+      rageScore,
+      fallsCount,
+      outfitName,
+    });
+
+    const ai = getGeminiClient();
+    if (!ai) {
+      res.json({
+        quote: fallback.quote,
+        author: fallback.author,
+        source: 'offline_fallback',
+        stepsLost,
+        fallDropMeters,
+      });
+      return;
+    }
+
+    try {
+      const prompt = `The climber (${outfitName}) just plummeted on Hawk Peak 500 from Stage ${fromStep} down to Stage ${toStep}, losing ${stepsLost} stages (${fallDropMeters.toFixed(1)} meters vertical drop). Their current Rage Score is ${rageScore}/100 across ${fallsCount} total falls. Deliver a single punchy 1-2 sentence live narrator roast or deadpan philosophical observation (max 38 words) that explicitly cites their stage numbers or ${fallDropMeters.toFixed(1)}m drop and Rage score.`;
+
+      const response = await ai.models.generateContent({
+        model: 'gemini-3.8-flash',
+        contents: prompt,
+        config: {
+          systemInstruction:
+            'You are the omniscient, deadpan philosophical narrator of "Hawk Peak 500" (in the spirit of Getting Over It with Bennett Foddy and Albert Camus). Your tone is dry, witty, poetic, and playfully mocking. Keep your response under 38 words, plain text only, no quotation marks around the whole response.',
+        },
+      });
+
+      const generatedText = response.text?.trim();
+      if (generatedText && generatedText.length > 8) {
+        res.json({
+          quote: generatedText.replace(/^["']|["']$/g, ''),
+          author: 'Gemini Live Narrator',
+          source: 'gemini',
+          stepsLost,
+          fallDropMeters,
+        });
+        return;
+      }
+    } catch (err) {
+      console.warn('Gemini fall-roast fallback triggered:', err);
+    }
+
+    res.json({
+      quote: fallback.quote,
+      author: fallback.author,
+      source: 'offline_fallback',
+      stepsLost,
+      fallDropMeters,
+    });
+  });
+
+  // 2. POST /api/npc/ask - Dynamic AI NPC Dialogue for Trail Guides (Hermit Goat, Cynical Crow, Bear, etc.)
+  app.post('/api/npc/ask', async (req, res) => {
+    const body = req.body || {};
+    const question = String(body.question || '').trim().slice(0, 240);
+    if (!question) {
+      res.status(400).json({
+        error: 'Please enter a question for the trail guide.',
+      });
+      return;
+    }
+
+    const npcName = String(body.npcName || 'Ranger Barnaby').slice(0, 48);
+    const npcSpecies = String(body.npcSpecies || 'bear').toLowerCase().slice(0, 24);
+    const npcRole = String(body.npcRole || 'Park Trail Warden').slice(0, 64);
+    const currentStep = Math.max(0, Math.min(500, Number(body.currentStep) || 0));
+    const peakStep = Math.max(0, Math.min(500, Number(body.peakStep) || currentStep));
+    const fallsCount = Math.max(0, Number(body.fallsCount) || 0);
+    const rageScore = Math.max(0, Math.min(100, Number(body.rageScore) || 0));
+
+    const fallbackReply = buildOfflineNpcReply({
+      npcName,
+      npcSpecies,
+      npcRole,
+      question,
+      currentStep,
+      peakStep,
+      fallsCount,
+      rageScore,
+    });
+
+    const ai = getGeminiClient();
+    if (!ai) {
+      res.json({
+        reply: fallbackReply,
+        npcName,
+        npcSpecies,
+        source: 'offline_fallback',
+      });
+      return;
+    }
+
+    const personaMap: Record<string, string> = {
+      goat: 'You are Old Goat Billy, the Hermit Goat of Hawk Peak. You speak with gruff alpine crag wisdom ("Baa-hah!"), obsess over hoof-grip, salt moss, and mock two-legged climbers who overcharge their jumps.',
+      crow: 'You are Corvus the Watcher, a cynical, sharp-tongued crow perched on the cliffs of Hawk Peak ("Caw!"). You run betting pools with the hawks on when the player will plummet and give darkly funny tactical advice.',
+      bear: 'You are Ranger Barnaby, a warm, deadpan bureaucratic Provincial Park Bear Warden on Hawk Peak. You treat 500-stage vertical plunges and glowing Rune Gates like routine trail safety regulations.',
+      fox: 'You are Scout Kit, an energetic, sly red fox trail runner who loves speed-vaulting and wind-reading.',
+      tortoise: 'You are Elder Shelly, an ancient, unhurried mountain tortoise who preaches patience over panic.',
+    };
+    const personaInstruction =
+      personaMap[npcSpecies] ||
+      `You are ${npcName} (${npcRole}), a memorable trail guide on Hawk Peak 500.`;
+
+    try {
+      const prompt = `The climber is at Stage ${currentStep}/500 (Peak Reached: Stage ${peakStep}, Total Falls: ${fallsCount}, Rage Score: ${rageScore}/100). They ask you: "${question}". Respond in character in 1-2 vivid sentences (max 42 words).`;
+
+      const response = await ai.models.generateContent({
+        model: 'gemini-3.8-flash',
+        contents: prompt,
+        config: {
+          systemInstruction: `${personaInstruction} Stay strictly in character, reference the climber's current stage or falls naturally, and keep your answer under 42 words in plain text.`,
+        },
+      });
+
+      const generatedReply = response.text?.trim();
+      if (generatedReply && generatedReply.length > 5) {
+        res.json({
+          reply: generatedReply.replace(/^["']|["']$/g, ''),
+          npcName,
+          npcSpecies,
+          source: 'gemini',
+        });
+        return;
+      }
+    } catch (err) {
+      console.warn('Gemini NPC dialogue fallback triggered:', err);
+    }
+
+    res.json({
+      reply: fallbackReply,
+      npcName,
+      npcSpecies,
+      source: 'offline_fallback',
+    });
+  });
 
   // GET /api/leaderboard - Returns sorted top climbers out of 500 levels
   app.get('/api/leaderboard', (_req, res) => {

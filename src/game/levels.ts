@@ -45,6 +45,16 @@ export type StepHazardType =
   | 'wind'       // Crosswind jetstream tunnel across the launch deck
   | 'bouncer';   // Repulsor crystal / thorny rim bumpers
 
+export const MOUNTAIN_CORE_X = 0.0;
+export const MOUNTAIN_CORE_Z = -21.5;
+
+export type StagePuzzleType =
+  | 'none'
+  | 'ordered_runes'
+  | 'timed_runes'
+  | 'boulder_socket'
+  | 'crusher_gauntlet';
+
 export type TrailGauntletType =
   | 'ranger_outpost'
   | 'plank_bridge'
@@ -184,6 +194,14 @@ export interface LevelStep {
   requiresSwitch: boolean;
   switchRelX: number;
   switchRelZ: number;
+  puzzleType: StagePuzzleType;
+  runeTimeLimitSec: number;
+  requiresBoulderSocket: boolean;
+  boulderStartRelX: number;
+  boulderStartRelZ: number;
+  boulderSocketRelX: number;
+  boulderSocketRelZ: number;
+  spiralAngleRad: number;
   runePlates: RunePlateNode[];
   deckObstacles: DeckObstacle[];
   npc?: TrailNpcData;
@@ -222,118 +240,118 @@ export function getAtmosphericLayerForStep(stepNumber: number): AtmosphericLayer
 export const BIOME_BLUEPRINTS: BiomeBlueprint[] = [
   {
     biome: 1,
-    name: '01. Hawk Peak Lower Trailhead',
+    name: '01. Foot of Mount Tartarus (Valley Trailhead)',
     range: 'Stages 001 – 050',
-    subtitle: 'Sunlit Pine Sanctuary · Grounded Cliff Outcrops, Rune Locks & Boulders',
+    subtitle: 'Sunlit Pine Crags · Grounded Mountain Switchbacks & The First Rolling Stones',
     themeColor: '#7ca936',
     surfaceTheme: 'sanctuary',
     atmosphericLayer: 'troposphere_valley',
     coreIrritationMechanic:
-      'Traverse varied mountain cliff ledges, weave around solid mossy boulders and fallen cedar logs, activate glowing Rune Plates, and follow the directional jump compass.',
+      'Begin the Sisyphean hike up the solid granite mountain face. Each terrace rolls a random difficulty (1/10 to 10/10) with rolling boulders, rune locks, and carved crags.',
   },
   {
     biome: 2,
-    name: '02. Autumn Birch Switchbacks',
+    name: '02. Sisyphean Boulder Switchbacks',
     range: 'Stages 051 – 100',
-    subtitle: 'Golden Canopy & Cloud Rim · Knife-Edge Ridges & Dual Rune Locks',
+    subtitle: 'Autumn Highland Crags · Relentless Rolling Stones & Timber Mill Beams',
     themeColor: '#d97724',
     surfaceTheme: 'clockwork',
     atmosphericLayer: 'alpine_cloud_deck',
     coreIrritationMechanic:
-      'Climb into the alpine cloud sea where narrow ridge spines, rotating timber beams, and wide canyon shelves test your timing.',
+      'Climb the steep highland cliff wall into the alpine cloud deck as runaway granite boulders roll across the carved mountain terraces.',
   },
   {
     biome: 3,
-    name: '03. Lower Stratosphere Sky-Pier',
+    name: '03. Cloud-Piercer Titan Buttress',
     range: 'Stages 101 – 150',
-    subtitle: 'Breaking the Cloud Deck (100+) · Cobalt Skies & Cliff Causeways',
+    subtitle: 'Breaking the Cloud Sea (100+) · Solid Stratosphere Cliff Terraces',
     themeColor: '#2ec4b6',
     surfaceTheme: 'aqueduct',
     atmosphericLayer: 'stratosphere',
     coreIrritationMechanic:
-      'Ascend above the cloud sea into the deep cobalt Stratosphere. Cross moving cliff ferries and unlock dual-rune barriers before vaulting.',
+      'Ascend above the cloud sea along the colossal upper mountain wall. Random difficulty spikes test your timing with multi-rune gates and rolling stones.',
   },
   {
     biome: 4,
-    name: '04. Stratospheric Jetstream Citadel',
+    name: '04. Windswept Atlas Crags',
     range: 'Stages 151 – 200',
-    subtitle: 'High-Altitude Basalt Relays · Fracture Slabs & Crosswinds',
+    subtitle: 'High-Altitude Basalt Mountain Face · Jetstream Gusts & Fracture Stone',
     themeColor: '#3b82f6',
     surfaceTheme: 'causeway',
     atmosphericLayer: 'stratosphere',
     coreIrritationMechanic:
-      'Jetstream crosswinds sweep between ancient mountain citadel ledges while unstable fracture slabs tremble beneath your boots.',
+      'Fierce mountain crosswinds sweep across the solid basalt cliff ledges while unstable fracture stone demands decisive footwork.',
   },
   {
     biome: 5,
-    name: '05. Mesosphere Cryo-Quartz Spire',
+    name: '05. Cryo-Glacier Cliffside',
     range: 'Stages 201 – 250',
-    subtitle: 'Twilight Horizon & First Stars · Low-Friction Quartz & Totem Slaloms',
+    subtitle: 'Frozen Upper Peak · Low-Friction Glacier Ledges & Rolling Ice Boulders',
     themeColor: '#38bdf8',
     surfaceTheme: 'quartz',
     atmosphericLayer: 'thermosphere_aurora',
     coreIrritationMechanic:
-      'Slick cryo-quartz decks preserve landing momentum in thin upper-atmosphere air while rotating crystal arms sweep the path.',
+      'Slick glacier ledges carved into the frozen mountain massif preserve landing momentum while heavy ice boulders patrol the trail.',
   },
   {
     biome: 6,
-    name: '06. Aurora Borealis Causeway',
+    name: '06. Aurora Crown Escarpment',
     range: 'Stages 251 – 300',
-    subtitle: 'Emerald & Violet Sky Curtains · Triple-Rune Sanctuaries & Dials',
+    subtitle: 'Emerald & Violet Sky Curtains · Ancient Astrolabe Terraces',
     themeColor: '#10b981',
     surfaceTheme: 'orrery',
     atmosphericLayer: 'thermosphere_aurora',
     coreIrritationMechanic:
-      'Under shimmering aurora curtains, solve 3-plate rune puzzles on spinning astrolabe decks before lining up your jump.',
+      'Under shimmering aurora curtains, solve 1-to-3 rune locks along the ancient mountain escarpment before vaulting higher.',
   },
   {
     biome: 7,
-    name: '07. Thermosphere Orbital Ring',
+    name: '07. Celestial Titan Wall',
     range: 'Stages 301 – 350',
-    subtitle: 'Sub-Orbital Obsidian Decks · Phase-Blinking Bridges & Gravity Gusts',
+    subtitle: 'Upper Firmament Cliffside · Obsidian Crags & Runaway Monolith Stones',
     themeColor: '#8b5cf6',
     surfaceTheme: 'anomaly',
     atmosphericLayer: 'thermosphere_aurora',
     coreIrritationMechanic:
-      'Sub-orbital platforms phase in and out on a rhythm—navigate the solid crystal chicanes and leap before the deck dematerializes.',
+      'The mountain pierces the upper firmament—navigate random high-difficulty obsidian ledges and heavy rolling monolith stones.',
   },
   {
     biome: 8,
-    name: '08. Exosphere Starlight Foundry',
+    name: '08. Star-Forge Mountain Ridge',
     range: 'Stages 351 – 400',
-    subtitle: 'Edge of Space · Solar-Sail Decks, Meteor Spheres & Magnetic Streams',
+    subtitle: 'Edge of the Cosmos · Gilded Granite Wall & Solar Rolling Spheres',
     themeColor: '#f59e0b',
     surfaceTheme: 'crucible',
     atmosphericLayer: 'deep_space',
     coreIrritationMechanic:
-      'Enter Deep Space where ringed planets and nebulae fill the void and rolling meteor spheres patrol gilded solar-sail stages.',
+      'Where the mountain touches deep space, gilded granite walls anchor solar-forged rolling boulders and multi-rune sanctuaries.',
   },
   {
     biome: 9,
-    name: '09. Deep Space Nebula Sanctuary',
+    name: '09. Astral Massif Ascent',
     range: 'Stages 401 – 450',
-    subtitle: 'Cosmic Starfields & Ringed Planets · Shifting Void Currents',
+    subtitle: 'Cosmic Cliff Face · Nebula Crags & High-Precision Boulders',
     themeColor: '#ec4899',
     surfaceTheme: 'nimbus',
     atmosphericLayer: 'deep_space',
     coreIrritationMechanic:
-      'High-precision jumps across crystalline asteroid sanctuaries with shifting camera angles every 12 stages.',
+      'Scale the upper astral massif where every terrace mixes randomized difficulty ratings from calm breathers to 10/10 gauntlets.',
   },
   {
     biome: 10,
-    name: '10. Hawk Peak 500 Astral Apex',
+    name: '10. Summit of the Universe (Sisyphus Crown)',
     range: 'Stages 451 – 500',
-    subtitle: 'The True Cosmic Summit · Every Puzzle & Obstacle Combined',
+    subtitle: 'The Ultimate Peak · Where the Eternal Stone Reaches the Top of the Universe',
     themeColor: '#facc15',
     surfaceTheme: 'monolith',
     atmosphericLayer: 'deep_space',
     coreIrritationMechanic:
-      'The final 50 cosmic monoliths combine 3-rune barrier locks, boulder slaloms, sweeping beams, and shifting camera angles up to Stage 500.',
+      'The final 50 terraces of the world-mountain lead to Stage 500 at the very top of the universe, where Sisyphus’s stone finally rests.',
   },
 ];
 
 export const PHILOSOPHICAL_ENDING_QUOTE =
-  'From a sunlit pine valley to the silent stars of Stage 500—you climbed the entire mountain purely on your own two feet.';
+  'From the earthly pine valley to the very top of the universe at Stage 500—one must imagine the climber happy.';
 
 export const PHILOSOPHICAL_TAUNTS: {
   minStepsLost: number;
@@ -342,37 +360,37 @@ export const PHILOSOPHICAL_TAUNTS: {
 }[] = [
   {
     minStepsLost: 1,
-    quote: 'You cleared the whole stage puzzle just to misjudge the launch edge by six inches.',
-    author: 'Ranger Barnaby, Trail Log #4',
+    quote: 'The stone rolls down, and the climber follows. At least it was only a single terrace!',
+    author: 'Ranger Barnaby, Sisyphean Log #4',
   },
   {
     minStepsLost: 2,
-    quote: 'Listen to the peaceful acoustic guitar. Let the calm music soothe the sting of that fall.',
-    author: 'Pip the Crow, Perched Above You',
+    quote: 'Every terrace on this mountain has its own random difficulty—and that one clearly had your number.',
+    author: 'Pip the Crow, Perched on the Cliff Wall',
   },
   {
     minStepsLost: 4,
-    quote: 'Did the camera shift throw off your depth perception, or was that jump artistic expression?',
+    quote: 'Sisyphus pushed a boulder up the mountain; you just threw yourself down it!',
     author: 'Chadwick the Mountain Goat',
   },
   {
     minStepsLost: 7,
-    quote: 'At least the lower cliff terrace caught your fall instead of the river!',
-    author: 'Maeve the Camper Fox',
+    quote: 'Good thing the solid mountain cliff terrace below caught your boots!',
+    author: 'Maeve the Cartographer Fox',
   },
   {
     minStepsLost: 12,
-    quote: 'I move at 0.02 miles per hour and I am somehow still ahead of you.',
-    author: 'Shelly the Tortoise',
+    quote: 'I climb at 0.02 miles per hour up this rock face and I am somehow still ahead of you.',
+    author: 'Shelly the Ancient Tortoise',
   },
   {
     minStepsLost: 20,
-    quote: 'Look on the bright side: those lower cliff outcrops look even prettier on the way down.',
-    author: 'Ranger Barnaby, Field Notes',
+    quote: 'The mountain stands unbroken from the valley to the stars. Dust off your boots and climb again.',
+    author: 'Chronicles of the Eternal Stone, Ch. VII',
   },
   {
     minStepsLost: 35,
-    quote: 'A peaceful mountain melody plays on, completely indifferent to your gravity-assisted descent.',
+    quote: 'A long tumble down the mountain face—yet the summit at the top of the universe still waits.',
     author: 'Hawk Peak Trail Guide, p. 42',
   },
 ];
@@ -614,8 +632,8 @@ const NPC_CAST: Omit<
 ];
 
 export const GROUND_FLOOR_Y = -1.35;
-export const GROUND_SPAWN_X = -1.2;
-export const GROUND_SPAWN_Z = 2.6;
+export const GROUND_SPAWN_X = 0.2;
+export const GROUND_SPAWN_Z = -1.8;
 
 // River and Bridge bounds in the Base Camp Valley (for real water current & bridge deck physics!)
 export const VALLEY_RIVER_BOUNDS = {
@@ -712,22 +730,22 @@ export const VALLEY_SOLID_COLLIDERS: ValleySolidCollider[] = [
     height: 2.5,
     kind: 'rock',
   },
-  // 7. Trailhead Wooden Signpost (x: -1.35, z: -1.45)
+  // 7. Trailhead Wooden Signpost (x: -1.85, z: -1.45)
   {
     id: 'collider-signpost',
     label: 'Trailhead Signpost',
-    x: -1.35,
+    x: -1.85,
     z: -1.45,
     halfW: 0.54,
     halfD: 0.28,
     height: 1.65,
     kind: 'prop',
   },
-  // 8. Cedar Split-Rail Fence Line (x: 4.2, z: -1.8)
+  // 8. Cedar Split-Rail Fence Line (x: 4.8, z: -1.8)
   {
     id: 'collider-fence-south',
     label: 'Park Boundary Fence',
-    x: 4.2,
+    x: 4.8,
     z: -1.8,
     halfW: 1.52,
     halfD: 0.26,
@@ -794,12 +812,12 @@ export const GROUND_STEP_META: LevelStep = {
   depth: 22.0,
   height: 0.4,
   supportDepth: 4.0,
-  dirX: 0.453,
-  dirZ: -0.891,
+  dirX: 0.145,
+  dirZ: -0.989,
   turnAngleDeg: 0,
-  horizGap: 3.6,
+  horizGap: 4.5,
   clearGap: 1.25,
-  vertRise: 0.82,
+  vertRise: 0.83,
   chargeSpeedMultiplier: 1.0,
   surfaceTheme: 'sanctuary',
   hazard: 'none',
@@ -816,6 +834,14 @@ export const GROUND_STEP_META: LevelStep = {
   requiresSwitch: false,
   switchRelX: 0,
   switchRelZ: 0,
+  puzzleType: 'none',
+  runeTimeLimitSec: 0,
+  requiresBoulderSocket: false,
+  boulderStartRelX: 0,
+  boulderStartRelZ: 0,
+  boulderSocketRelX: 0,
+  boulderSocketRelZ: 0,
+  spiralAngleRad: Math.PI * 0.5,
   runePlates: [],
   deckObstacles: [],
   npc: {
@@ -823,7 +849,7 @@ export const GROUND_STEP_META: LevelStep = {
     ...NPC_CAST[0],
     blocksPathByDefault: false,
     relX: -2.2,
-    relZ: -0.4,
+    relZ: 2.2,
   },
   conveyorDirX: 0,
   conveyorDirZ: 0,
@@ -833,7 +859,7 @@ export const GROUND_STEP_META: LevelStep = {
   sideColorHex: 0x645d55,
   accentHex: 0xc87d44,
   psychologicalTrap:
-    'Cross the arched cedar bridge over the rushing turquoise river, chat with Ranger Barnaby in POV camera mode [E], and leap onto Stage 1 to begin the 500-stage ascent.',
+    'Cross the arched cedar bridge over the rushing turquoise river, chat with Ranger Barnaby in POV camera mode [E], and leap onto Stage 1 on the North Bank to begin the 500-stage spiral ascent.',
 };
 
 /**
@@ -857,96 +883,169 @@ export function generate500Levels(seed = DEFAULT_SPIRE_SEED): LevelStep[] {
   const rng = mulberry32(seed);
   const steps: LevelStep[] = [];
 
-  // Stage 1 starts just south of the river bank so the player leaps from the valley trail or bridge onto Stage 1!
+  // Stage 1 starts on the North Bank right at the north end of the Arched Cedar Bridge (z = -6.25),
+  // anchored directly into the Southern granite face of Mount Tartarus (MOUNTAIN_CORE = (0, -21.5)).
   let curX = 0.85;
   let curY = -0.52;
-  let curZ = -1.65;
-  let headingRad = -1.18;
+  let curZ = -6.25;
+  let headingRad = -0.45;
+
+  // Hand-tuned showcase of random difficulty contrast in the opening stages so the player
+  // immediately experiences genuine Sisyphean challenge and per-stage random difficulty (1/10 to 10/10):
+  const openingDifficultyShowcase: Record<number, number> = {
+    1: 5,  // Stage 1: Trailhead Dual-Rune & Rolling Stone Gate (Diff 5/10)
+    2: 8,  // Stage 2: Sisyphus Boulder-Push Socket Puzzle + Sweeper Beam (Diff 8/10)
+    3: 9,  // Stage 3: Sequential 3-Rune Lock + High-Speed Rolling Stone (Diff 9/10)
+    4: 7,  // Stage 4: Timed Countdown Rune Relay + Crosswind (Diff 7/10)
+    5: 9,  // Stage 5: Knife-Edge Sisyphus Boulder-Push + Sweeper Beam (Diff 9/10)
+    6: 10, // Stage 6: Extreme 10/10 Sequential 3-Rune Tartarus Gauntlet (Diff 10/10)
+    7: 3,  // Stage 7: High-Crag Wind Ledge (Diff 3/10)
+    8: 8,  // Stage 8: Timed 3-Rune Relay + Rotating Mill Beam (Diff 8/10)
+    9: 1,  // Stage 9: Narrow Crag Outcrop (Diff 1/10)
+    10: 6, // Stage 10: Sisyphus Boulder Altar + Rolling Stone (Diff 6/10)
+  };
 
   for (let i = 1; i <= TOTAL_LEVELS; i++) {
     const biome = Math.min(10, Math.ceil(i / 50)) as BiomeId;
     const atmosphericLayer = getAtmosphericLayerForStep(i);
     const pal = BIOME_PALETTES[biome];
 
-    const difficultyRating = Math.min(
-      10,
-      Math.max(1, Math.ceil((i / TOTAL_LEVELS) * 10))
-    );
-
     const isMilestone =
-      i === 1 || i % 12 === 0 || i % 25 === 0 || i === TOTAL_LEVELS;
+      i % 50 === 0 || i === TOTAL_LEVELS;
 
     // ============================================================================
-    // DRAMATIC STAGE SIZE & SHAPE PERMUTATIONS (No two adjacent stages share identical dimensions!)
+    // TRUE PER-STAGE RANDOM DIFFICULTY RATING (1/10 to 10/10 on EVERY stage, biased harder!)
+    // ============================================================================
+    let difficultyRating: number;
+    if (isMilestone) {
+      difficultyRating = 2; // Every 50th Milestone Sanctuary is a calm checkpoint
+    } else if (openingDifficultyShowcase[i] !== undefined) {
+      difficultyRating = openingDifficultyShowcase[i];
+    } else {
+      const r1 = Math.floor(rng() * 10) + 1;
+      const r2 = Math.floor(rng() * 10) + 1;
+      // Bias 70% of stages toward the higher of two rolls so the ascent is relentlessly punishing,
+      // while still rolling all 10 ratings (1..10) across the mountain!
+      let rolled = rng() < 0.7 ? Math.max(r1, r2) : r1;
+      const prevDiff = steps[i - 2]?.difficultyRating ?? 5;
+      if (Math.abs(rolled - prevDiff) <= 1) {
+        rolled = ((rolled + 4) % 10) + 1;
+      }
+      difficultyRating = Math.max(1, Math.min(10, rolled));
+    }
+
+    // ============================================================================
+    // STAGE ARCHETYPE & TIGHTER DIMENSIONS DRIVEN BY RANDOM DIFFICULTY RATING
     // ============================================================================
     let stageArchetype: StageArchetype = 'switchback_terrace';
-    let width = 3.8;
-    let depth = 3.8;
+    let width = 3.5;
+    let depth = 3.5;
 
     if (i === 1) {
       stageArchetype = 'outpost_plaza';
-      width = 4.2;
-      depth = 4.0;
+      width = 3.95;
+      depth = 3.65;
     } else if (i === TOTAL_LEVELS) {
       stageArchetype = 'grand_sanctuary';
-      width = 5.8;
-      depth = 5.8;
+      width = 6.0;
+      depth = 6.0;
     } else if (isMilestone) {
       stageArchetype = 'grand_sanctuary';
-      width = 4.8 + rng() * 0.8;
-      depth = 4.6 + rng() * 0.8;
-    } else {
-      const permRoll = (i * 3 + Math.floor(rng() * 5)) % 6;
-      if (permRoll === 0) {
-        // Grand Puzzle Sanctuary: Huge courtyard for multi-rune & multi-boulder puzzles
-        stageArchetype = 'grand_sanctuary';
-        width = 4.85 + rng() * 0.85;
-        depth = 4.55 + rng() * 0.85;
-      } else if (permRoll === 1) {
-        // Knife-Edge Ridge: Elongated narrow mountain spine
-        stageArchetype = 'knife_ridge';
-        width = 4.35 + rng() * 0.85;
-        depth = 2.45 + rng() * 0.35;
-      } else if (permRoll === 2) {
-        // Broad Canyon Shelf: Wide lateral span with wing runes
-        stageArchetype = 'canyon_span';
-        width = 3.05 + rng() * 0.45;
-        depth = 4.85 + rng() * 0.95;
-      } else if (permRoll === 3 && i > 4) {
-        // Precision Pinnacle Needle: Compact outcrop requiring crisp footwork
+      width = 4.9 + rng() * 0.5;
+      depth = 4.7 + rng() * 0.5;
+    } else if (difficultyRating >= 8) {
+      const highRoll = (i + Math.floor(rng() * 3)) % 3;
+      if (highRoll === 0 && i > 6) {
         stageArchetype = 'pin_needle';
-        width = 2.65 + rng() * 0.38;
-        depth = 2.65 + rng() * 0.38;
-      } else if (permRoll === 4) {
-        // Outpost Plaza: Medium-large scenic terrace
-        stageArchetype = 'outpost_plaza';
-        width = 4.15 + rng() * 0.65;
-        depth = 3.95 + rng() * 0.65;
+        width = 2.65 + rng() * 0.32;
+        depth = 2.65 + rng() * 0.32;
+      } else if (highRoll === 1) {
+        stageArchetype = 'knife_ridge';
+        width = 4.05 + rng() * 0.65;
+        depth = 2.52 + rng() * 0.28;
       } else {
-        // Asymmetric Switchback Terrace
-        stageArchetype = 'switchback_terrace';
-        width = 3.65 + rng() * 0.95;
-        depth = 3.25 + rng() * 0.95;
+        stageArchetype = 'grand_sanctuary';
+        width = 4.45 + rng() * 0.65;
+        depth = 4.25 + rng() * 0.65;
       }
+    } else if (difficultyRating >= 4) {
+      const midRoll = (i + Math.floor(rng() * 3)) % 3;
+      if (midRoll === 0) {
+        stageArchetype = 'canyon_span';
+        width = 3.12 + rng() * 0.38;
+        depth = 4.35 + rng() * 0.65;
+      } else if (midRoll === 1) {
+        stageArchetype = 'switchback_terrace';
+        width = 3.52 + rng() * 0.58;
+        depth = 3.32 + rng() * 0.58;
+      } else {
+        stageArchetype = 'knife_ridge';
+        width = 3.85 + rng() * 0.55;
+        depth = 2.68 + rng() * 0.32;
+      }
+    } else {
+      stageArchetype = rng() < 0.55 ? 'outpost_plaza' : 'switchback_terrace';
+      width = 3.95 + rng() * 0.65;
+      depth = 3.82 + rng() * 0.65;
     }
 
     let turnAngleDeg = 0;
-    let horizGap = i === 1 ? 3.8 : 0;
-    let clearGap = i === 1 ? 1.18 : 0;
-    let vertRise = i === 1 ? 0.82 : 0;
+    let horizGap = i === 1 ? 4.5 : 0;
+    let clearGap = i === 1 ? 1.24 : 0;
+    let vertRise = i === 1 ? 0.85 : 0;
     let dx = Number(Math.cos(headingRad).toFixed(4));
     let dz = Number(Math.sin(headingRad).toFixed(4));
 
     if (i > 1) {
       const prevStep = steps[i - 2];
 
-      // Helical / Winding Mountain Ascent so lower stages naturally sit beneath upper stages to catch falls logically!
-      const spiralDelta =
-        i <= 3
-          ? (rng() - 0.5) * 0.24
-          : 0.34 + (rng() - 0.35) * 0.38;
-      headingRad += spiralDelta;
-      turnAngleDeg = Math.round((spiralDelta * 180) / Math.PI);
+      // ============================================================================
+      // 3D SPIRALING MOUNTAIN ASCENT WITH NON-LINEAR CRAG SWITCHBACKS
+      // Winds 360° counter-clockwise around the Colossal Central Mountain Core
+      // at (MOUNTAIN_CORE_X = 0, MOUNTAIN_CORE_Z = -21.5) while weaving radially in
+      // and out across jagged rock spurs so no two jumps follow a straight line!
+      // ============================================================================
+      const diffScale = (difficultyRating - 1) / 9;
+      clearGap = Number((1.16 + diffScale * 0.44 + rng() * 0.14).toFixed(2));
+      vertRise = Number((0.8 + diffScale * 0.3 + rng() * 0.12).toFixed(2));
+
+      const prevRadialAngle = Math.atan2(
+        curZ - MOUNTAIN_CORE_Z,
+        curX - MOUNTAIN_CORE_X
+      );
+      // Target angle advances counter-clockwise (-0.28 to -0.38 rad per stage) around the mountain core
+      const dTheta = -(0.27 + (i % 3) * 0.05 + rng() * 0.08);
+      const nextRadialAngle = prevRadialAngle + dTheta;
+
+      // Radial crag variation: weave between 11.2m (inner cliff alcove) and 16.4m (outer rock spur)
+      // creating sharp non-linear inward and outward dogleg cuts while spiraling up the mountain!
+      const zigBeat = i % 4;
+      const radialBase =
+        zigBeat === 0
+          ? 11.4
+          : zigBeat === 1
+          ? 15.6
+          : zigBeat === 2
+          ? 12.6
+          : 16.2;
+      const targetRadius = radialBase + (rng() - 0.5) * 1.4;
+
+      const idealTargetX =
+        MOUNTAIN_CORE_X + Math.cos(nextRadialAngle) * targetRadius;
+      const idealTargetZ =
+        MOUNTAIN_CORE_Z + Math.sin(nextRadialAngle) * targetRadius;
+
+      const desiredHeading = Math.atan2(
+        idealTargetZ - curZ,
+        idealTargetX - curX
+      );
+
+      const appliedDelta = Math.atan2(
+        Math.sin(desiredHeading - headingRad),
+        Math.cos(desiredHeading - headingRad)
+      );
+      headingRad = desiredHeading;
+      turnAngleDeg = Math.round((appliedDelta * 180) / Math.PI);
 
       dx = Number(Math.cos(headingRad).toFixed(4));
       dz = Number(Math.sin(headingRad).toFixed(4));
@@ -960,18 +1059,6 @@ export function generate500Levels(seed = DEFAULT_SPIRE_SEED): LevelStep[] {
       );
       const curExtent = directionalHalfExtent(width, depth, dx, dz);
 
-      if (i === 2) {
-        clearGap = 1.18;
-        vertRise = 0.8;
-      } else if (i <= 10) {
-        clearGap = 1.16 + rng() * 0.24;
-        vertRise = 0.78 + rng() * 0.16;
-      } else {
-        const prog = i / TOTAL_LEVELS;
-        clearGap = 1.18 + prog * 0.28 + rng() * 0.24;
-        vertRise = 0.8 + prog * 0.16 + rng() * 0.15;
-      }
-
       horizGap = prevExtent + curExtent + clearGap;
 
       curX += dx * horizGap;
@@ -979,71 +1066,118 @@ export function generate500Levels(seed = DEFAULT_SPIRE_SEED): LevelStep[] {
       curY += vertRise;
     }
 
+    const spiralAngleRad = Number(
+      Math.atan2(curZ - MOUNTAIN_CORE_Z, curX - MOUNTAIN_CORE_X).toFixed(4)
+    );
+
     const perpX = -dz;
     const perpZ = dx;
 
     let hazard: StepHazardType = 'none';
     let gauntletType: TrailGauntletType = 'plank_bridge';
     let friction = 0.92;
-    const restitution = 0.15;
+    const restitution = 0.18;
     let hazardSpeed = 0;
     let hazardAmplitude = 0;
     const vehicleStyle: VehicleStyle = 'golem';
     const hasTreeLeft =
-      i < 220 && stageArchetype !== 'pin_needle' && rng() < 0.68;
+      i < 260 && stageArchetype !== 'pin_needle' && rng() < 0.72;
     const hasTreeRight =
-      i < 220 && stageArchetype !== 'pin_needle' && rng() < 0.65;
+      i < 260 && stageArchetype !== 'pin_needle' && rng() < 0.68;
     let hasBarrierCenter = false;
     const conveyorDirX = perpX;
     const conveyorDirZ = perpZ;
 
-    const chargeSpeedMultiplier =
-      i <= 4
-        ? 1.0
-        : Number((0.92 + (i / TOTAL_LEVELS) * 0.26 + rng() * 0.2).toFixed(2));
+    // Charge speed scales aggressively with the stage's random difficulty rating!
+    const chargeSpeedMultiplier = isMilestone
+      ? 1.0
+      : Number((1.05 + (difficultyRating / 10) * 0.48 + rng() * 0.08).toFixed(2));
 
-    const hasBridgeToNext =
-      i === 1 || i === 2 || (i < 160 && i % 4 === 0);
+    const hasBridgeToNext = false;
 
-    // Multi-Rune Gate Locks: On puzzle stages, the front Launch Edge is blocked by a solid energy/stone barrier
-    // until the player steps on 1, 2, or 3 Rune Pressure Plates arranged across the stage deck!
-    const requiresSwitch =
-      i === 2 ||
-      i === 4 ||
-      i === 6 ||
-      stageArchetype === 'grand_sanctuary' ||
-      stageArchetype === 'canyon_span' ||
-      (i >= 8 && i < TOTAL_LEVELS && (i % 2 === 0 || rng() < 0.52));
+    // ============================================================================
+    // STAGE PUZZLE ARCHETYPE SELECTION (Every non-milestone stage has a real puzzle!)
+    // 1. boulder_socket: Push Sisyphus's Boulder into the Golden Altar Socket + Runes
+    // 2. ordered_runes: Step on Numbered Runes in strict sequence 1 -> 2 -> 3
+    // 3. timed_runes: Beat the ticking countdown clock to activate all Runes
+    // 4. crusher_gauntlet: Multi-Rune Lock under heavy rolling boulders / beams
+    // ============================================================================
+    let puzzleType: StagePuzzleType = 'none';
+    if (isMilestone) {
+      puzzleType = 'none';
+    } else if (i === 1) {
+      puzzleType = 'crusher_gauntlet';
+    } else if (i === 2 || i === 5 || i === 10) {
+      puzzleType = 'boulder_socket';
+    } else if (i === 3 || i === 6) {
+      puzzleType = 'ordered_runes';
+    } else if (i === 4 || i === 8) {
+      puzzleType = 'timed_runes';
+    } else {
+      const pRoll = (i * 5 + Math.floor(rng() * 4)) % 4;
+      if (pRoll === 0 && stageArchetype !== 'pin_needle') {
+        puzzleType = 'boulder_socket';
+      } else if (pRoll === 1) {
+        puzzleType = 'ordered_runes';
+      } else if (pRoll === 2) {
+        puzzleType = 'timed_runes';
+      } else {
+        puzzleType = 'crusher_gauntlet';
+      }
+    }
+
+    const requiresSwitch = puzzleType !== 'none' && i < TOTAL_LEVELS;
+    const requiresBoulderSocket =
+      puzzleType === 'boulder_socket' && i < TOTAL_LEVELS;
+
+    // Tighter countdown timer for timed_runes (3.8s to 6.6s)
+    const runeTimeLimitSec =
+      puzzleType === 'timed_runes'
+        ? Number(Math.max(3.8, 7.2 - difficultyRating * 0.32).toFixed(1))
+        : 0;
 
     const runePlates: RunePlateNode[] = [];
     if (requiresSwitch && i < TOTAL_LEVELS) {
       const plateCount =
-        stageArchetype === 'pin_needle' || i <= 5
-          ? 1
-          : stageArchetype === 'grand_sanctuary' && i >= 12
-          ? 3
-          : stageArchetype === 'canyon_span' || i % 2 === 0
+        i === 1
           ? 2
-          : 1;
+          : puzzleType === 'ordered_runes' || puzzleType === 'timed_runes'
+          ? difficultyRating >= 6 && stageArchetype !== 'pin_needle'
+            ? 3
+            : 2
+          : puzzleType === 'boulder_socket'
+          ? difficultyRating >= 7
+            ? 2
+            : 1
+          : difficultyRating >= 7
+          ? 3
+          : 2;
 
+      const sideFlip = rng() < 0.5 ? 1 : -1;
       for (let pIdx = 0; pIdx < plateCount; pIdx++) {
         let fwdOffset = 0;
         let latOffset = 0;
         if (plateCount === 1) {
-          fwdOffset = -width * 0.06;
-          latOffset = (i % 2 === 0 ? 1 : -1) * (depth * 0.24);
+          fwdOffset = (-0.12 + rng() * 0.22) * width;
+          latOffset = sideFlip * (0.22 + rng() * 0.1) * depth;
         } else if (plateCount === 2) {
-          fwdOffset = (pIdx === 0 ? -0.12 : 0.06) * width;
-          latOffset = (pIdx === 0 ? -1 : 1) * (depth * 0.28);
+          fwdOffset =
+            (pIdx === 0 ? -0.18 + rng() * 0.1 : 0.06 + rng() * 0.12) * width;
+          latOffset =
+            (pIdx === 0 ? -sideFlip : sideFlip) * (0.24 + rng() * 0.08) * depth;
         } else {
           fwdOffset =
-            pIdx === 0 ? -width * 0.2 : pIdx === 1 ? -width * 0.05 : width * 0.1;
+            pIdx === 0
+              ? (-0.22 + rng() * 0.07) * width
+              : pIdx === 1
+              ? (-0.04 + rng() * 0.1) * width
+              : (0.1 + rng() * 0.09) * width;
           latOffset =
             pIdx === 0
-              ? -depth * 0.28
+              ? -sideFlip * (0.25 + rng() * 0.07) * depth
               : pIdx === 1
-              ? depth * 0.28
-              : 0;
+              ? sideFlip * (0.25 + rng() * 0.07) * depth
+              : (-0.08 + rng() * 0.16) * depth;
         }
         const rx = Number((dx * fwdOffset + perpX * latOffset).toFixed(2));
         const rz = Number((dz * fwdOffset + perpZ * latOffset).toFixed(2));
@@ -1052,7 +1186,7 @@ export function generate500Levels(seed = DEFAULT_SPIRE_SEED): LevelStep[] {
           index: pIdx,
           relX: rx,
           relZ: rz,
-          radius: 0.68,
+          radius: 0.46, // Precision rune activation radius!
         });
       }
     }
@@ -1060,32 +1194,67 @@ export function generate500Levels(seed = DEFAULT_SPIRE_SEED): LevelStep[] {
     const switchRelX = runePlates[0]?.relX ?? 0;
     const switchRelZ = runePlates[0]?.relZ ?? 0;
 
+    // Sisyphus Pushable Boulder & Golden Altar Socket coordinates (for boulder_socket stages)
+    let boulderStartRelX = 0;
+    let boulderStartRelZ = 0;
+    let boulderSocketRelX = 0;
+    let boulderSocketRelZ = 0;
+    if (requiresBoulderSocket) {
+      const bSide = i % 2 === 0 ? 1 : -1;
+      const startFwd = -0.12 * width;
+      const startLat = -bSide * 0.2 * depth;
+      const sockFwd = 0.14 * width;
+      const sockLat = bSide * 0.22 * depth;
+      boulderStartRelX = Number((dx * startFwd + perpX * startLat).toFixed(2));
+      boulderStartRelZ = Number((dz * startFwd + perpZ * startLat).toFixed(2));
+      boulderSocketRelX = Number((dx * sockFwd + perpX * sockLat).toFixed(2));
+      boulderSocketRelZ = Number((dz * sockFwd + perpZ * sockLat).toFixed(2));
+    }
+
     // ============================================================================
     // ON-DECK SOLID SCULPTED OBSTACLES (Mossy Crag Boulders, Fallen Cedar Logs, Carved Totems, Spruce Trees)
-    // Placed with guaranteed clearance from the Back Landing Zone & Rune Plates!
+    // Placed with guaranteed clearance from the Back Landing Zone, Rune Plates & Boulder Socket!
     // ============================================================================
     const deckObstacles: DeckObstacle[] = [];
 
     const tryAddObstacle = (cand: DeckObstacle) => {
       // 1. Keep Back Landing Zone clear so landing never clips an obstacle
       const fwdProj = cand.relX * dx + cand.relZ * dz;
-      if (fwdProj < -width * 0.24) return;
-      // 2. Keep Front Launch Strip clear so player can stand at the launch compass
-      if (fwdProj > width * 0.26) return;
+      const entryRelX = -dx * width * 0.25;
+      const entryRelZ = -dz * depth * 0.25;
+      if (
+        Math.hypot(cand.relX - entryRelX, cand.relZ - entryRelZ) <
+        Math.max(cand.halfW, cand.halfD) + 0.42
+      ) {
+        return;
+      }
+      // 2. Keep Front Launch Strip clear so player can stand at the launch edge
+      if (fwdProj > width * 0.31) return;
       // 3. Keep clear of all Rune Plates so every rune is reachable
       for (const rp of runePlates) {
         if (
           Math.hypot(cand.relX - rp.relX, cand.relZ - rp.relZ) <
-          Math.max(cand.halfW, cand.halfD) + 0.58
+          Math.max(cand.halfW, cand.halfD) + 0.38
         ) {
           return;
         }
       }
-      // 4. Keep clear of existing obstacles
+      // 4. Keep clear of Sisyphus Puzzle Boulder & Altar Socket
+      if (requiresBoulderSocket) {
+        if (
+          Math.hypot(cand.relX - boulderStartRelX, cand.relZ - boulderStartRelZ) <
+            Math.max(cand.halfW, cand.halfD) + 0.55 ||
+          Math.hypot(cand.relX - boulderSocketRelX, cand.relZ - boulderSocketRelZ) <
+            Math.max(cand.halfW, cand.halfD) + 0.55
+        ) {
+          return;
+        }
+      }
+      // 5. Keep clear of existing obstacles
       for (const ex of deckObstacles) {
         if (
           Math.hypot(cand.relX - ex.relX, cand.relZ - ex.relZ) <
-          Math.max(cand.halfW, cand.halfD) + Math.max(ex.halfW, ex.halfD) + 0.42
+          Math.max(cand.halfW, cand.halfD) + Math.max(ex.halfW, ex.halfD) + 0.38
         ) {
           return;
         }
@@ -1094,60 +1263,59 @@ export function generate500Levels(seed = DEFAULT_SPIRE_SEED): LevelStep[] {
     };
 
     if (hasTreeLeft) {
-      deckObstacles.push({
+      tryAddObstacle({
         id: `tree-L-${i}`,
-        relX: Number((-dx * width * 0.33 - perpX * depth * 0.35).toFixed(2)),
-        relZ: Number((-dz * width * 0.33 - perpZ * depth * 0.35).toFixed(2)),
-        halfW: 0.36,
-        halfD: 0.36,
+        relX: Number((-dx * width * 0.22 - perpX * depth * 0.34).toFixed(2)),
+        relZ: Number((-dz * width * 0.22 - perpZ * depth * 0.34).toFixed(2)),
+        halfW: 0.34,
+        halfD: 0.34,
         height: 1.55,
-        kind: i > 100 ? 'crystal' : 'tree',
+        kind: i > 120 ? 'crystal' : 'tree',
       });
     }
     if (hasTreeRight) {
-      deckObstacles.push({
+      tryAddObstacle({
         id: `tree-R-${i}`,
-        relX: Number((-dx * width * 0.33 + perpX * depth * 0.35).toFixed(2)),
-        relZ: Number((-dz * width * 0.33 + perpZ * depth * 0.35).toFixed(2)),
-        halfW: 0.36,
-        halfD: 0.36,
+        relX: Number((-dx * width * 0.22 + perpX * depth * 0.34).toFixed(2)),
+        relZ: Number((-dz * width * 0.22 + perpZ * depth * 0.34).toFixed(2)),
+        halfW: 0.34,
+        halfD: 0.34,
         height: 1.55,
-        kind: i > 100 ? 'crystal' : 'tree',
+        kind: i > 120 ? 'crystal' : 'tree',
       });
     }
 
-    if (i > 1 && i < TOTAL_LEVELS) {
-      if (stageArchetype === 'grand_sanctuary') {
+    if (i < TOTAL_LEVELS) {
+      if (stageArchetype === 'grand_sanctuary' || difficultyRating >= 8) {
         hasBarrierCenter = true;
         tryAddObstacle({
           id: `totem-center-${i}`,
           relX: 0,
           relZ: 0,
-          halfW: 0.44,
-          halfD: 0.44,
+          halfW: 0.40,
+          halfD: 0.40,
           height: 1.25,
           kind: 'totem',
         });
         tryAddObstacle({
           id: `boulder-L-${i}`,
-          relX: Number((-dx * 0.45 - perpX * (depth * 0.22)).toFixed(2)),
-          relZ: Number((-dz * 0.45 - perpZ * (depth * 0.22)).toFixed(2)),
-          halfW: 0.42,
-          halfD: 0.42,
+          relX: Number((-dx * 0.38 - perpX * (depth * 0.24)).toFixed(2)),
+          relZ: Number((-dz * 0.38 - perpZ * (depth * 0.24)).toFixed(2)),
+          halfW: 0.38,
+          halfD: 0.38,
           height: 0.95,
           kind: i > 120 ? 'crystal' : 'pillar',
         });
         tryAddObstacle({
           id: `boulder-R-${i}`,
-          relX: Number((dx * 0.38 + perpX * (depth * 0.22)).toFixed(2)),
-          relZ: Number((dz * 0.38 + perpZ * (depth * 0.22)).toFixed(2)),
-          halfW: 0.42,
-          halfD: 0.42,
+          relX: Number((dx * 0.28 + perpX * (depth * 0.24)).toFixed(2)),
+          relZ: Number((dz * 0.28 + perpZ * (depth * 0.24)).toFixed(2)),
+          halfW: 0.38,
+          halfD: 0.38,
           height: 0.95,
           kind: i > 120 ? 'crystal' : 'pillar',
         });
       } else if (stageArchetype === 'canyon_span') {
-        // Twin Fallen Cedar Logs / Totems flanking the center forcing wing detours
         tryAddObstacle({
           id: `log-A-${i}`,
           relX: Number((-dx * 0.22 - perpX * (depth * 0.14)).toFixed(2)),
@@ -1167,7 +1335,6 @@ export function generate500Levels(seed = DEFAULT_SPIRE_SEED): LevelStep[] {
           kind: 'wall',
         });
       } else if (stageArchetype === 'knife_ridge') {
-        // Staggered ridge boulders forcing a tight weave along the narrow spine
         tryAddObstacle({
           id: `ridge-rock-1-${i}`,
           relX: Number((-dx * 0.42 + perpX * (depth * 0.18)).toFixed(2)),
@@ -1239,9 +1406,31 @@ export function generate500Levels(seed = DEFAULT_SPIRE_SEED): LevelStep[] {
           });
         }
       }
+      // Guarantee physical roadblock chicanes even on stages with 3-rune arrays
+      if (deckObstacles.length === 0) {
+        const sideSign = i % 2 === 0 ? 1 : -1;
+        tryAddObstacle({
+          id: `rim-spire-A-${i}`,
+          relX: Number((dx * 0.04 + perpX * sideSign * (depth * 0.34)).toFixed(2)),
+          relZ: Number((dz * 0.04 + perpZ * sideSign * (depth * 0.34)).toFixed(2)),
+          halfW: 0.32,
+          halfD: 0.32,
+          height: 0.96,
+          kind: i > 120 ? 'crystal' : 'pillar',
+        });
+        tryAddObstacle({
+          id: `rim-spire-B-${i}`,
+          relX: Number((-dx * 0.06 - perpX * sideSign * (depth * 0.34)).toFixed(2)),
+          relZ: Number((-dz * 0.06 - perpZ * sideSign * (depth * 0.34)).toFixed(2)),
+          halfW: 0.32,
+          halfD: 0.32,
+          height: 0.96,
+          kind: 'totem',
+        });
+      }
     }
 
-    // Side-Character Mocking & Path-Blocking NPCs stationed on key terraces
+    // Side-Character Mocking & Path-Blocking NPCs stationed on key terraces and every 50th/100th Milestone Sanctuary
     let npc: TrailNpcData | undefined;
     if (
       i === 1 ||
@@ -1249,7 +1438,9 @@ export function generate500Levels(seed = DEFAULT_SPIRE_SEED): LevelStep[] {
       i === 6 ||
       i === 12 ||
       i % 9 === 0 ||
-      i === TOTAL_LEVELS - 1
+      i % 50 === 0 ||
+      i === TOTAL_LEVELS - 1 ||
+      i === TOTAL_LEVELS
     ) {
       const castTemplate =
         i === 3
@@ -1260,6 +1451,7 @@ export function generate500Levels(seed = DEFAULT_SPIRE_SEED): LevelStep[] {
       const blocksPath =
         i > 1 &&
         i < TOTAL_LEVELS &&
+        i % 50 !== 0 &&
         (castTemplate.behavior === 'blocker' ||
           i === 3 ||
           i === 12 ||
@@ -1276,55 +1468,66 @@ export function generate500Levels(seed = DEFAULT_SPIRE_SEED): LevelStep[] {
       };
     }
 
-    // Non-repeating dynamic stage hazard selection across all 500 stages
-    if (i === 1 || i === TOTAL_LEVELS) {
+    // ============================================================================
+    // SISYPHEAN ROLLING STONE & MOUNTAIN HAZARD SELECTION SCALED BY RANDOM DIFFICULTY
+    // ============================================================================
+    const speedScale = 1.15 + (difficultyRating / 10) * 1.05;
+    if (i % 50 === 0 || i === TOTAL_LEVELS) {
       hazard = 'none';
       gauntletType = 'ranger_outpost';
-    } else if (i === 2) {
-      hazard = 'barrier';
-      gauntletType = 'switch_gate';
-    } else if (i === 3) {
+    } else if (i === 1) {
       hazard = 'pusher';
-      hazardSpeed = 1.55;
+      hazardSpeed = 1.85;
       hazardAmplitude = 0.85;
       gauntletType = 'boulder_run';
+    } else if (i === 2 || i === 5 || i === 8) {
+      hazard = 'sweeper';
+      hazardSpeed = 2.05;
+      gauntletType = 'sawmill_sweep';
+    } else if (i === 3 || i === 6) {
+      hazard = 'pusher';
+      hazardSpeed = 2.45;
+      hazardAmplitude = 0.92;
+      gauntletType = 'boulder_run';
+    } else if (i === 4) {
+      hazard = 'wind';
+      hazardSpeed = 2.25;
+      gauntletType = 'wind_ridge';
+    } else if (difficultyRating <= 2) {
+      hazard = rng() < 0.35 ? 'none' : 'wind';
+      hazardSpeed = 1.65;
+      gauntletType = 'plank_bridge';
     } else {
       const hRoll = (rng() + i * 0.173) % 1;
-      const speedScale = 1 + (i / TOTAL_LEVELS) * 0.55;
 
-      if (hRoll < 0.19) {
+      if (hRoll < 0.32) {
         hazard = 'pusher';
-        hazardSpeed = (1.55 + rng() * 0.55) * speedScale;
-        hazardAmplitude = 0.88;
+        hazardSpeed = (1.65 + rng() * 0.6) * speedScale;
+        hazardAmplitude = 0.92;
         gauntletType = 'boulder_run';
-      } else if (hRoll < 0.35) {
+      } else if (hRoll < 0.50) {
         hazard = 'sweeper';
         hazardSpeed =
-          (rng() < 0.5 ? 1 : -1) * (1.35 + rng() * 0.5) * speedScale;
+          (rng() < 0.5 ? 1 : -1) * (1.45 + rng() * 0.55) * speedScale;
         gauntletType = 'sawmill_sweep';
-      } else if (hRoll < 0.49) {
+      } else if (hRoll < 0.63) {
         hazard = 'conveyor';
-        hazardSpeed = (1.15 + rng() * 0.45) * speedScale;
+        hazardSpeed = (1.35 + rng() * 0.5) * speedScale;
         gauntletType = 'mud_switchback';
-      } else if (hRoll < 0.61) {
+      } else if (hRoll < 0.75) {
         hazard = 'turntable';
-        hazardSpeed = (rng() < 0.5 ? 1 : -1) * (0.95 + rng() * 0.45);
+        hazardSpeed = (rng() < 0.5 ? 1 : -1) * (1.15 + rng() * 0.5) * speedScale;
         gauntletType = 'switch_gate';
-      } else if (hRoll < 0.73) {
+      } else if (hRoll < 0.86 && difficultyRating >= 5) {
         hazard = 'crumble';
         gauntletType = 'crumble_ledge';
-      } else if (hRoll < 0.83 && i > 14) {
-        hazard = 'log';
-        hazardSpeed = (1.15 + rng() * 0.45) * speedScale;
-        hazardAmplitude = 0.55 + rng() * 0.22;
-        gauntletType = 'log_ferry';
-      } else if (hRoll < 0.92 && i > 20) {
+      } else if (hRoll < 0.94 && difficultyRating >= 4) {
         hazard = 'wind';
-        hazardSpeed = 1.85 + rng() * 0.65;
+        hazardSpeed = (1.95 + rng() * 0.65) * speedScale;
         gauntletType = 'wind_ridge';
       } else {
-        hazard = i > 50 && rng() < 0.5 ? 'ice' : 'barrier';
-        if (hazard === 'ice') friction = 0.28;
+        hazard = difficultyRating >= 4 && rng() < 0.72 ? 'ice' : 'barrier';
+        if (hazard === 'ice') friction = 0.22;
         gauntletType = requiresSwitch ? 'switch_gate' : 'plank_bridge';
       }
     }
@@ -1334,89 +1537,39 @@ export function generate500Levels(seed = DEFAULT_SPIRE_SEED): LevelStep[] {
     }
 
     const archetypeLabels: Record<StageArchetype, string> = {
-      outpost_plaza: 'Outpost Ledge',
-      grand_sanctuary: 'Grand Puzzle Sanctuary',
-      knife_ridge: 'Knife-Edge Ridge',
-      canyon_span: 'Broad Canyon Span',
-      pin_needle: 'Precision Pinnacle',
-      switchback_terrace: 'Switchback Terrace',
+      outpost_plaza: 'Mountain Terrace',
+      grand_sanctuary: 'Sisyphean Sanctuary',
+      knife_ridge: 'Knife-Edge Crag',
+      canyon_span: 'Cliffside Escarpment',
+      pin_needle: 'Tartarus Spire Outcrop',
+      switchback_terrace: 'Granite Switchback',
     };
 
-    const hazardDescriptions: Record<StepHazardType, { t: string; p: string }> =
-      {
-        none: {
-          t:
-            i === 1
-              ? 'Hawk Peak Lower Overlook'
-              : i === 500
-              ? 'Hawk Peak 500 Astral Summit'
-              : `${archetypeLabels[stageArchetype]} ${i}`,
-          p:
-            i === 500
-              ? 'The 500th cosmic summit monolith high in deep space.'
-              : `Weave past the sculpted boulders to the golden launch compass (${clearGap.toFixed(1)}m jump).`,
-        },
-        pusher: {
-          t: `Rolling Boulder ${archetypeLabels[stageArchetype]} ${i}`,
-          p: 'Time your sprint past the rolling granite boulder and line up with the golden launch arrow.',
-        },
-        sweeper: {
-          t: `Rotating Beam ${archetypeLabels[stageArchetype]} ${i}`,
-          p: 'Weave around the carved totems and time the rotating timber beam before charging your jump.',
-        },
-        log: {
-          t: `Drifting Cliff Causeway ${i}`,
-          p: 'Cross the moving ledge and release your jump when the emerald target ring locks on.',
-        },
-        conveyor: {
-          t: `Mountain Torrent Deck ${i}`,
-          p: 'A lateral stream pushes across the ledge—counter-steer to the golden launch compass.',
-        },
-        turntable: {
-          t: `Astrolabe Compass ${archetypeLabels[stageArchetype]} ${i}`,
-          p: 'Rotating center dial shifts your heading—step to the outer launch rim to aim cleanly.',
-        },
-        blinker: {
-          t: `Phase-Shift Causeway ${i}`,
-          p: 'Stage slabs cycle between solid and ethereal—cross and vault while solid!',
-        },
-        ice: {
-          t: `Glacier Quartz ${archetypeLabels[stageArchetype]} ${i}`,
-          p: 'Low-friction surface preserves landing momentum—use the boulder chicanes to stabilize.',
-        },
-        barrier: {
-          t: `Boulder Slalom ${archetypeLabels[stageArchetype]} ${i}`,
-          p: 'Sculpted boulders and fallen cedar logs block the center—weave S-curves to the launch compass.',
-        },
-        glitch: {
-          t: `Gravity Eddy ${archetypeLabels[stageArchetype]} ${i}`,
-          p: 'Upper-atmosphere turbulence tests your spatial orientation—trust the green landing ring.',
-        },
-        crumble: {
-          t: `Fracture Crag ${archetypeLabels[stageArchetype]} ${i}`,
-          p: 'Unstable cliff stone trembles after touchdown—advance to the launch edge before it drops!',
-        },
-        wind: {
-          t: `Jetstream ${archetypeLabels[stageArchetype]} ${i}`,
-          p: 'High-altitude crosswinds curve your jump trajectory—aim into the wind!',
-        },
-        bouncer: {
-          t: `Repulsor Rim ${archetypeLabels[stageArchetype]} ${i}`,
-          p: 'Crystal bumpers line the outer rim—land squarely inside the deck.',
-        },
-      };
+    const puzzleLabels: Record<StagePuzzleType, string> = {
+      none: 'Exposed Crag',
+      boulder_socket: 'Sisyphus Stone Trial',
+      ordered_runes: 'Harmonic Rune Lock',
+      timed_runes: `${runeTimeLimitSec}s Relay Trial`,
+      crusher_gauntlet: 'Tartarus Gauntlet',
+    };
 
-    const desc = hazardDescriptions[hazard];
-    const switchNote =
-      runePlates.length > 0
-        ? ` [PUZZLE LOCK: Step on ${runePlates.length} Rune Plate${runePlates.length > 1 ? 's' : ''} to lower the Launch Gate!]`
-        : '';
+    const descTitle =
+      i === 1
+        ? 'Mount Tartarus Trailhead Gate'
+        : i === 500
+        ? 'Summit of the Universe · Sisyphus Crown'
+        : `${archetypeLabels[stageArchetype]} ${i} · ${puzzleLabels[puzzleType]}`;
 
-    // Deep grounded cliff support column depth so stages are anchored into the mountain massif (never floating islands!)
-    const supportDepth =
-      i <= 300
-        ? Number((7.5 + (i % 5) * 1.4).toFixed(2))
-        : Number((3.8 + (i % 4) * 0.9).toFixed(2));
+    const puzzleInstructions: Record<StagePuzzleType, string> = {
+      none: `Diff ${difficultyRating}/10 · Judge the elevation, crosswind, and gap distance yourself—no trajectory reticle will guide your boots.`,
+      boulder_socket: `Diff ${difficultyRating}/10 [SISYPHUS STONE TRIAL] · The carved boulder rolls back down the slope if abandoned. Drive it into the altar socket and break the rune seal.`,
+      ordered_runes: `Diff ${difficultyRating}/10 [HARMONIC RUNE LOCK] · The ${runePlates.length} runes demand a strict hidden sequence. One wrong step shatters the seal and resets the stage.`,
+      timed_runes: `Diff ${difficultyRating}/10 [TIMED RUNE RELAY] · The seal collapses ${runeTimeLimitSec}s after the first rune is struck. Find the fastest line across the obstacles.`,
+      crusher_gauntlet: `Diff ${difficultyRating}/10 [TARTARUS GAUNTLET] · Break all ${runePlates.length} rune seals under active mountain hazards, then gauge the blind leap to the next crag.`,
+    };
+
+    const decoyLedge: DecoyLedge | undefined = undefined;
+    const supportDepth = Number((8.5 + (i % 5) * 1.4).toFixed(2));
 
     steps.push({
       stepNumber: i,
@@ -1426,11 +1579,11 @@ export function generate500Levels(seed = DEFAULT_SPIRE_SEED): LevelStep[] {
       surfaceTheme: pal.theme,
       gauntletType,
       difficultyRating,
-      title:
-        runePlates.length > 0
-          ? `${desc.t} (${runePlates.length}-Rune Lock)`
-          : desc.t,
-      psychologicalTrap: `${desc.p}${switchNote}`,
+      title: descTitle,
+      psychologicalTrap:
+        i === 500
+          ? 'The 500th terrace at the very top of the universe—where the Eternal Rolling Stone finally rests.'
+          : puzzleInstructions[puzzleType],
       x: Number(curX.toFixed(3)),
       y: Number(curY.toFixed(3)),
       z: Number(curZ.toFixed(3)),
@@ -1455,10 +1608,18 @@ export function generate500Levels(seed = DEFAULT_SPIRE_SEED): LevelStep[] {
       requiresSwitch,
       switchRelX,
       switchRelZ,
+      puzzleType,
+      runeTimeLimitSec,
+      requiresBoulderSocket,
+      boulderStartRelX,
+      boulderStartRelZ,
+      boulderSocketRelX,
+      boulderSocketRelZ,
+      spiralAngleRad,
       runePlates,
       deckObstacles,
       npc,
-      decoyLedge: undefined,
+      decoyLedge,
       dirX: dx,
       dirZ: dz,
       turnAngleDeg,

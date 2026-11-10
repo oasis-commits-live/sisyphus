@@ -6,9 +6,12 @@ import {
   GROUND_STEP_META,
   LEVELS_500,
   LevelStep,
+  MOUNTAIN_CORE_X,
+  MOUNTAIN_CORE_Z,
   NpcDialogueChoice,
   PHILOSOPHICAL_ENDING_QUOTE,
   PHILOSOPHICAL_TAUNTS,
+  StagePuzzleType,
   TOTAL_LEVELS,
   TrailNpcData,
   VALLEY_BRIDGE_BOUNDS,
@@ -41,57 +44,57 @@ export const CAMERA_ANGLE_PRESETS: Record<CameraAngleMode, CameraPresetConfig> =
   {
     isometric: {
       mode: 'isometric',
-      label: '3/4 Expedition Trail View',
+      label: '3/4 Mountain Trail View',
       shortLabel: '3/4 Trail',
       offsetX: 14.5,
-      offsetY: 14.8,
+      offsetY: 13.8,
       offsetZ: 14.5,
       zoomMultiplier: 1.0,
     },
     follow: {
       mode: 'follow',
-      label: 'Low Shoulder Pursuit Angle',
+      label: 'Low Shoulder Ascent Cam',
       shortLabel: 'Shoulder Cam',
-      offsetX: 8.5,
-      offsetY: 9.2,
-      offsetZ: 14.0,
-      zoomMultiplier: 1.18,
+      offsetX: 11.8,
+      offsetY: 9.8,
+      offsetZ: 15.2,
+      zoomMultiplier: 1.12,
     },
     side: {
       mode: 'side',
-      label: 'Sheer Precipice Profile',
+      label: 'Sheer Cliff Face Profile',
       shortLabel: 'Cliff Profile',
-      offsetX: 18.2,
-      offsetY: 8.8,
-      offsetZ: 3.2,
+      offsetX: 16.8,
+      offsetY: 11.2,
+      offsetZ: 11.5,
       zoomMultiplier: 1.04,
     },
     reverse_angle: {
       mode: 'reverse_angle',
-      label: 'Inverted Canyon Vertigo Cam',
-      shortLabel: 'Vertigo Angle',
-      offsetX: -13.5,
-      offsetY: 14.2,
-      offsetZ: 13.8,
-      zoomMultiplier: 1.02,
+      label: 'Canyon Rim Overlook Cam',
+      shortLabel: 'Rim Overlook',
+      offsetX: 12.5,
+      offsetY: 14.6,
+      offsetZ: 16.2,
+      zoomMultiplier: 0.98,
     },
     topdown: {
       mode: 'topdown',
-      label: 'High Zenith Survey Angle',
-      shortLabel: 'Zenith Survey',
-      offsetX: 4.2,
-      offsetY: 23.5,
-      offsetZ: 4.2,
-      zoomMultiplier: 0.9,
+      label: 'High Ridge Survey Angle',
+      shortLabel: 'Ridge Survey',
+      offsetX: 13.2,
+      offsetY: 16.8,
+      offsetZ: 13.2,
+      zoomMultiplier: 0.92,
     },
     panoramic: {
       mode: 'panoramic',
-      label: 'Wide Atmospheric Vista',
+      label: 'Wide Mountain Vista',
       shortLabel: 'Wide Vista',
-      offsetX: 19.5,
-      offsetY: 18.0,
-      offsetZ: -14.5,
-      zoomMultiplier: 0.82,
+      offsetX: 17.5,
+      offsetY: 15.4,
+      offsetZ: 15.5,
+      zoomMultiplier: 0.85,
     },
   };
 
@@ -114,6 +117,56 @@ export function getAutoCameraModeForStep(stepNumber: number): CameraAngleMode {
   if (stepNumber <= 0) return 'isometric';
   const band = Math.floor(stepNumber / CAMERA_SHIFT_INTERVAL_STEPS);
   return CAMERA_MODES_ORDER[band % CAMERA_MODES_ORDER.length];
+}
+
+/**
+ * Computes the 3D camera offset that smoothly orbits radially outward around
+ * the Colossal Central Mountain Core `(MOUNTAIN_CORE_X, MOUNTAIN_CORE_Z)` as the
+ * player spirals 360° up the mountain, ensuring the solid mountain core is always
+ * behind the stages and NEVER obstructs the camera!
+ */
+export function computeSpiralCameraOffset(
+  stepNumber: number,
+  worldX: number,
+  worldZ: number,
+  mode: CameraAngleMode
+): {
+  offsetX: number;
+  offsetY: number;
+  offsetZ: number;
+  zoomMultiplier: number;
+} {
+  const preset = CAMERA_ANGLE_PRESETS[mode] || CAMERA_ANGLE_PRESETS.isometric;
+  if (stepNumber <= 0) {
+    return {
+      offsetX: preset.offsetX,
+      offsetY: preset.offsetY,
+      offsetZ: preset.offsetZ,
+      zoomMultiplier: preset.zoomMultiplier,
+    };
+  }
+
+  const horizDist = Math.hypot(preset.offsetX, preset.offsetZ);
+  const outwardAngle = Math.atan2(
+    worldZ - MOUNTAIN_CORE_Z,
+    worldX - MOUNTAIN_CORE_X
+  );
+  const presetYawBias: Record<CameraAngleMode, number> = {
+    isometric: -0.38,
+    follow: -0.16,
+    side: -0.62,
+    reverse_angle: 0.34,
+    topdown: -0.28,
+    panoramic: -0.44,
+  };
+  const camAngle = outwardAngle + (presetYawBias[mode] ?? -0.38);
+
+  return {
+    offsetX: Number((Math.cos(camAngle) * horizDist).toFixed(3)),
+    offsetY: preset.offsetY,
+    offsetZ: Number((Math.sin(camAngle) * horizDist).toFixed(3)),
+    zoomMultiplier: preset.zoomMultiplier,
+  };
 }
 
 export interface PlayerState {
@@ -139,6 +192,11 @@ export interface PlayerState {
   rageScore: number; // 0 to 100
   activatedRuneIds: string[];
   unlockedGateSteps: number[];
+  boulderSocketUnlockedSteps: number[];
+  puzzleBoulderStep: number;
+  puzzleBoulderRelX: number;
+  puzzleBoulderRelZ: number;
+  runePuzzleTimer: number;
   clearedNpcSteps: number[];
   visitedLandmarks: string[];
   spireMutations: number;
@@ -149,6 +207,7 @@ export interface PlayerState {
   teeterAmount: number;
   isTumbling: boolean;
   tumbleSpin: number;
+  peakAirborneY?: number;
   won: boolean;
 }
 
@@ -179,12 +238,12 @@ export interface LiveWindState {
 
 export const GRAVITY = -22.0;
 export const MIN_JUMP_HORIZ_SPEED = 1.6;
-export const MAX_JUMP_HORIZ_SPEED = 8.4;
+export const MAX_JUMP_HORIZ_SPEED = 9.6;
 export const MIN_JUMP_VERT_SPEED = 4.8;
-export const MAX_JUMP_VERT_SPEED = 10.5;
+export const MAX_JUMP_VERT_SPEED = 11.0;
 export const CHARGE_FULL_DURATION = 0.88;
 export const GROUND_NUDGE_SPEED = 3.4;
-export const AIR_CONTROL_ACCEL = 3.5;
+export const AIR_CONTROL_ACCEL = 1.15;
 export const PLAYER_COLLISION_RADIUS = 0.31;
 
 export function createInitialPlayerState(startStep = 0): PlayerState {
@@ -217,6 +276,11 @@ export function createInitialPlayerState(startStep = 0): PlayerState {
       rageScore: 0,
       activatedRuneIds: [],
       unlockedGateSteps: [],
+      boulderSocketUnlockedSteps: [],
+      puzzleBoulderStep: 0,
+      puzzleBoulderRelX: 0,
+      puzzleBoulderRelZ: 0,
+      runePuzzleTimer: 0,
       clearedNpcSteps: [],
       visitedLandmarks: [],
       spireMutations: 0,
@@ -236,9 +300,9 @@ export function createInitialPlayerState(startStep = 0): PlayerState {
   const nextObj =
     LEVELS_500[Math.min(TOTAL_LEVELS - 1, clampedIdx + 1)] || stepObj;
 
-  // Spawn on the safe entry side of the stage deck so the player never spawns inside a central boulder/totem!
-  const spawnX = stepObj.x - stepObj.dirX * (stepObj.width * 0.31);
-  const spawnZ = stepObj.z - stepObj.dirZ * (stepObj.depth * 0.31);
+  // Spawn on the safe entry side of the stage deck so the player never spawns inside a central boulder/totem or rolling stone lane!
+  const spawnX = stepObj.x - stepObj.dirX * (stepObj.width * 0.25);
+  const spawnZ = stepObj.z - stepObj.dirZ * (stepObj.depth * 0.25);
   const initialAim = Math.atan2(nextObj.z - spawnZ, nextObj.x - spawnX);
 
   return {
@@ -264,6 +328,11 @@ export function createInitialPlayerState(startStep = 0): PlayerState {
     rageScore: 0,
     activatedRuneIds: [],
     unlockedGateSteps: [],
+    boulderSocketUnlockedSteps: [],
+    puzzleBoulderStep: stepObj.requiresBoulderSocket ? stepObj.stepNumber : 0,
+    puzzleBoulderRelX: stepObj.boulderStartRelX,
+    puzzleBoulderRelZ: stepObj.boulderStartRelZ,
+    runePuzzleTimer: 0,
     clearedNpcSteps: [],
     visitedLandmarks: [],
     spireMutations: 0,
@@ -735,9 +804,8 @@ export function getLiveWindVector(
     LEVELS_500[Math.max(0, Math.min(TOTAL_LEVELS - 1, stepNumber - 1))];
   const isWindStep = step?.hazard === 'wind';
   const altitudeFactor =
-    stepNumber < 65
-      ? 0
-      : Math.min(1, (stepNumber - 65) / 380) * 0.45 + (isWindStep ? 0.55 : 0);
+    (stepNumber < 25 ? 0 : Math.min(1, (stepNumber - 25) / 360) * 0.48) +
+    (isWindStep ? 0.62 : 0);
 
   if (altitudeFactor <= 0.02 && !isWindStep) {
     return {
@@ -863,9 +931,9 @@ export function getStepRuntimeOffset(
       hazardWarning = 1;
     }
   } else if (step.hazard === 'crumble') {
-    if (crumbleProgress > 0 && crumbleProgress < 1.65) {
-      collapseWarning = Math.min(1, crumbleProgress / 1.65);
-    } else if (crumbleProgress >= 1.65 && crumbleProgress < 3.65) {
+    if (crumbleProgress > 0 && crumbleProgress < 1.2) {
+      collapseWarning = Math.min(1, crumbleProgress / 1.2);
+    } else if (crumbleProgress >= 1.2 && crumbleProgress < 3.4) {
       collapsed = true;
     }
   } else if (step.hazard === 'pusher') {
@@ -874,8 +942,9 @@ export function getStepRuntimeOffset(
     const perpZ = step.dirX || 0;
     const span = Math.max(step.width, step.depth) * 0.42;
     const travel = Math.sin((cycle / 3.4) * Math.PI * 2) * span;
-    boulderRelX = perpX * travel;
-    boulderRelZ = perpZ * travel;
+    const fwdOffset = Math.min(step.width, step.depth) * 0.16;
+    boulderRelX = step.dirX * fwdOffset + perpX * travel;
+    boulderRelZ = step.dirZ * fwdOffset + perpZ * travel;
     if (Math.abs(travel) < span * 0.35) {
       pusherExtended = 1;
       hazardWarning = 0.85;
@@ -995,8 +1064,24 @@ export function computeAimAlignment(
   idealChargePercent: number;
 } {
   const rtNow = getStepRuntimeOffset(nextStep, elapsedTime + 0.55, 0);
-  const tx = nextStep.x + rtNow.offsetX;
-  const tz = nextStep.z + rtNow.offsetZ;
+  const entryOffsetScale = nextStep.hasBarrierCenter ? 0.16 : 0;
+  const wind = getLiveWindVector(elapsedTime, nextStep.stepNumber - 1);
+  const estFlight = 0.65;
+  const windDriftX =
+    wind.strength > 0 ? 0.5 * (wind.windX * 0.5) * estFlight * estFlight : 0;
+  const windDriftZ =
+    wind.strength > 0 ? 0.5 * (wind.windZ * 0.5) * estFlight * estFlight : 0;
+
+  const tx =
+    nextStep.x +
+    rtNow.offsetX -
+    nextStep.dirX * (nextStep.width * entryOffsetScale) -
+    windDriftX;
+  const tz =
+    nextStep.z +
+    rtNow.offsetZ -
+    nextStep.dirZ * (nextStep.depth * entryOffsetScale) -
+    windDriftZ;
   const idealAimAngle = Math.atan2(tz - playerZ, tx - playerX);
   const diffRad = Math.atan2(
     Math.sin(aimAngle - idealAimAngle),
@@ -1007,7 +1092,7 @@ export function computeAimAlignment(
 
   let bestCharge = 0.58;
   let bestDist = Infinity;
-  for (let c = 0.22; c <= 0.96; c += 0.02) {
+  for (let c = 0.2; c <= 0.98; c += 0.02) {
     const pred = computePredictedLandingSpot(
       playerX,
       playerY,
@@ -1017,10 +1102,13 @@ export function computeAimAlignment(
       nextStep,
       elapsedTime
     );
-    const dHoriz = Math.hypot(
-      pred.x - pred.targetCenterX,
-      pred.z - pred.targetCenterZ
-    );
+    const targetX =
+      pred.targetCenterX -
+      nextStep.dirX * (nextStep.width * entryOffsetScale);
+    const targetZ =
+      pred.targetCenterZ -
+      nextStep.dirZ * (nextStep.depth * entryOffsetScale);
+    const dHoriz = Math.hypot(pred.x - targetX, pred.z - targetZ);
     const vertPenalty = pred.y < nextStep.y - 0.02 ? 100 : 0;
     const score = dHoriz + vertPenalty;
     if (score < bestDist) {
@@ -1039,14 +1127,15 @@ export function computeAimAlignment(
 
 export function computeIdealJumpToNextStep(
   fromStepNumber = 0,
-  elapsedTime = 0
+  elapsedTime = 0,
+  fromCoords?: { x: number; y: number; z: number }
 ): { aimAngle: number; chargeRatio: number } {
   if (fromStepNumber <= 0) {
     const next = LEVELS_500[0];
     const align = computeAimAlignment(
-      GROUND_SPAWN_X,
-      GROUND_FLOOR_Y,
-      GROUND_SPAWN_Z,
+      fromCoords?.x ?? GROUND_SPAWN_X,
+      fromCoords?.y ?? GROUND_FLOOR_Y,
+      fromCoords?.z ?? GROUND_SPAWN_Z,
       0,
       next,
       elapsedTime
@@ -1062,9 +1151,9 @@ export function computeIdealJumpToNextStep(
   const next = LEVELS_500[idx + 1];
 
   const align = computeAimAlignment(
-    current.x,
-    current.y,
-    current.z,
+    fromCoords?.x ?? current.x,
+    fromCoords?.y ?? current.y,
+    fromCoords?.z ?? current.z,
     0,
     next,
     elapsedTime
@@ -1130,19 +1219,30 @@ export interface StepPhysicsResult {
   reachedSummit: boolean;
   activatedRunePlate?: boolean;
   unlockedTrailGate?: boolean;
+  lockedBoulderInSocket?: boolean;
+  pushedPuzzleBoulder?: boolean;
+  resetRunesWrongOrder?: boolean;
+  resetRunesTimeout?: boolean;
   enteredRiverWater?: boolean;
   discoveredLandmark?: string;
   blockedByNpc?: boolean;
   cameraShiftedTo?: CameraAngleMode;
+  fallDropMeters?: number;
 }
 
 export function isStepGateUnlocked(
   step: LevelStep,
   state: PlayerState
 ): boolean {
-  if (!step.requiresSwitch || step.runePlates.length === 0) return true;
+  if (!step.requiresSwitch) return true;
   if (state.unlockedGateSteps.includes(step.stepNumber)) return true;
-  return step.runePlates.every((rp) => state.activatedRuneIds.includes(rp.id));
+  const runesCleared =
+    step.runePlates.length === 0 ||
+    step.runePlates.every((rp) => state.activatedRuneIds.includes(rp.id));
+  const boulderCleared =
+    !step.requiresBoulderSocket ||
+    state.boulderSocketUnlockedSteps.includes(step.stepNumber);
+  return runesCleared && boulderCleared;
 }
 
 /**
@@ -1162,34 +1262,38 @@ function enforceStageSolidObstacles(
 
   // Run 2 iterative resolution passes so corner wedges between two boulders never allow clipping
   for (let pass = 0; pass < 2; pass++) {
-    for (const obs of plat.deckObstacles) {
-      if (isAirborne && state.y > plat.y + obs.height + 0.14) continue;
-      if (isAirborne && state.y < plat.y - 0.18) continue;
-
-      const resolved = resolveCircleAabbCollision(
-        state.x,
-        state.z,
-        PLAYER_COLLISION_RADIUS,
-        platCenterX + obs.relX,
-        platCenterZ + obs.relZ,
-        obs.halfW + 0.04,
-        obs.halfD + 0.04
-      );
-      if (resolved.collided) {
-        state.x = resolved.x;
-        state.z = resolved.z;
-        const vn = state.vx * resolved.normalX + state.vz * resolved.normalZ;
-        if (vn < 0) {
-          const bounce = isAirborne ? 1.42 : 1.0;
-          state.vx -= bounce * vn * resolved.normalX;
-          state.vz -= bounce * vn * resolved.normalZ;
+    // Grounded walking collides solidly with all on-deck boulders, logs, totems & trees;
+    // when airborne (vaulting), only high pillars/walls above the player's feet or locked gates block flight.
+    if (!isAirborne) {
+      for (const obs of plat.deckObstacles) {
+        const resolved = resolveCircleAabbCollision(
+          state.x,
+          state.z,
+          PLAYER_COLLISION_RADIUS,
+          platCenterX + obs.relX,
+          platCenterZ + obs.relZ,
+          obs.halfW + 0.04,
+          obs.halfD + 0.04
+        );
+        if (resolved.collided) {
+          state.x = resolved.x;
+          state.z = resolved.z;
+          const vn = state.vx * resolved.normalX + state.vz * resolved.normalZ;
+          if (vn < 0) {
+            state.vx -= vn * resolved.normalX;
+            state.vz -= vn * resolved.normalZ;
+          }
+          hitAny = true;
         }
-        hitAny = true;
       }
     }
 
     // Oriented Bounding Box (OBB) Collision against Locked Rune Gate Barrier!
-    if (!isStepGateUnlocked(plat, state)) {
+    // Only enforce a stage's front launch-edge Rune Gate when the player is on or below that stage!
+    if (
+      plat.stepNumber <= state.currentStep &&
+      !isStepGateUnlocked(plat, state)
+    ) {
       if (!isAirborne || (state.y >= plat.y - 0.15 && state.y <= plat.y + 1.18)) {
         const gateCenterX = platCenterX + plat.dirX * (plat.width * 0.31);
         const gateCenterZ = platCenterZ + plat.dirZ * (plat.depth * 0.31);
@@ -1239,6 +1343,10 @@ export function advancePlayerPhysics(
     reachedSummit: false,
     activatedRunePlate: false,
     unlockedTrailGate: false,
+    lockedBoulderInSocket: false,
+    pushedPuzzleBoulder: false,
+    resetRunesWrongOrder: false,
+    resetRunesTimeout: false,
     enteredRiverWater: false,
     blockedByNpc: false,
   };
@@ -1334,7 +1442,111 @@ export function advancePlayerPhysics(
     const halfW = activeStepObj.width * 0.5;
     const halfD = activeStepObj.depth * 0.5;
 
-    // Check Multi-Rune Puzzle Plates on current stage deck
+    // ============================================================================
+    // STAGE PUZZLE MECHANICS (Sisyphus Boulder Altar, Ordered Runes, Timed Relay)
+    // ============================================================================
+    if (
+      activeStepObj.requiresBoulderSocket &&
+      state.puzzleBoulderStep !== activeStepObj.stepNumber
+    ) {
+      state.puzzleBoulderStep = activeStepObj.stepNumber;
+      if (state.boulderSocketUnlockedSteps.includes(activeStepObj.stepNumber)) {
+        state.puzzleBoulderRelX = activeStepObj.boulderSocketRelX;
+        state.puzzleBoulderRelZ = activeStepObj.boulderSocketRelZ;
+      } else {
+        state.puzzleBoulderRelX = activeStepObj.boulderStartRelX;
+        state.puzzleBoulderRelZ = activeStepObj.boulderStartRelZ;
+      }
+    }
+
+    // 1. Sisyphus Boulder-Push Altar Socket Puzzle (boulder_socket) with Slope Rollback!
+    if (
+      activeStepObj.requiresBoulderSocket &&
+      !state.boulderSocketUnlockedSteps.includes(activeStepObj.stepNumber)
+    ) {
+      const dxB = state.puzzleBoulderRelX - relX;
+      const dzB = state.puzzleBoulderRelZ - relZ;
+      const distB = Math.hypot(dxB, dzB);
+      const pushRadius = 0.78;
+      if (distB < pushRadius) {
+        const nx = distB > 0.001 ? dxB / distB : activeStepObj.dirX;
+        const nz = distB > 0.001 ? dzB / distB : activeStepObj.dirZ;
+        const pushSpeed = Math.max(
+          0.075,
+          (pushRadius - distB) * 1.08 +
+            Math.hypot(state.vx, state.vz) * simDt * 0.85
+        );
+        state.puzzleBoulderRelX = Number(
+          (state.puzzleBoulderRelX + nx * pushSpeed).toFixed(3)
+        );
+        state.puzzleBoulderRelZ = Number(
+          (state.puzzleBoulderRelZ + nz * pushSpeed).toFixed(3)
+        );
+        state.vx *= 0.72;
+        state.vz *= 0.72;
+        result.pushedPuzzleBoulder = true;
+
+        const distSocket = Math.hypot(
+          state.puzzleBoulderRelX - activeStepObj.boulderSocketRelX,
+          state.puzzleBoulderRelZ - activeStepObj.boulderSocketRelZ
+        );
+        if (distSocket <= 0.58) {
+          state.puzzleBoulderRelX = activeStepObj.boulderSocketRelX;
+          state.puzzleBoulderRelZ = activeStepObj.boulderSocketRelZ;
+          state.boulderSocketUnlockedSteps.push(activeStepObj.stepNumber);
+          result.lockedBoulderInSocket = true;
+        } else if (
+          Math.abs(state.puzzleBoulderRelX) > halfW * 0.9 ||
+          Math.abs(state.puzzleBoulderRelZ) > halfD * 0.9
+        ) {
+          // If Sisyphus's boulder rolls off the stage rim, respawn it at its starting pedestal!
+          state.puzzleBoulderRelX = activeStepObj.boulderStartRelX;
+          state.puzzleBoulderRelZ = activeStepObj.boulderStartRelZ;
+        }
+      } else {
+        // Sisyphus Slope Rollback: if the player stops pushing the boulder before it locks into
+        // the altar socket, mountain gravity slowly rolls it back toward its starting pedestal!
+        const backDx = activeStepObj.boulderStartRelX - state.puzzleBoulderRelX;
+        const backDz = activeStepObj.boulderStartRelZ - state.puzzleBoulderRelZ;
+        const backDist = Math.hypot(backDx, backDz);
+        if (backDist > 0.015) {
+          const rollStep = Math.min(backDist, 0.52 * simDt);
+          state.puzzleBoulderRelX = Number(
+            (state.puzzleBoulderRelX + (backDx / backDist) * rollStep).toFixed(3)
+          );
+          state.puzzleBoulderRelZ = Number(
+            (state.puzzleBoulderRelZ + (backDz / backDist) * rollStep).toFixed(3)
+          );
+        }
+      }
+    }
+
+    // 2. Timed Rune Relay Countdown Check (timed_runes)
+    if (
+      activeStepObj.puzzleType === 'timed_runes' &&
+      !state.unlockedGateSteps.includes(activeStepObj.stepNumber)
+    ) {
+      const activeStageRunes = activeStepObj.runePlates.filter((rp) =>
+        state.activatedRuneIds.includes(rp.id)
+      );
+      if (
+        activeStageRunes.length > 0 &&
+        activeStageRunes.length < activeStepObj.runePlates.length
+      ) {
+        state.runePuzzleTimer = Math.max(0, state.runePuzzleTimer - simDt);
+        if (state.runePuzzleTimer <= 0) {
+          const stageRuneIds = new Set(
+            activeStepObj.runePlates.map((rp) => rp.id)
+          );
+          state.activatedRuneIds = state.activatedRuneIds.filter(
+            (id) => !stageRuneIds.has(id)
+          );
+          result.resetRunesTimeout = true;
+        }
+      }
+    }
+
+    // 3. Multi-Rune & Sequential Ordered Rune Puzzle Plates on current stage deck
     if (
       activeStepObj.requiresSwitch &&
       !state.unlockedGateSteps.includes(activeStepObj.stepNumber)
@@ -1343,6 +1555,28 @@ export function advancePlayerPhysics(
         if (!state.activatedRuneIds.includes(rp.id)) {
           const rDist = Math.hypot(relX - rp.relX, relZ - rp.relZ);
           if (rDist <= rp.radius) {
+            if (activeStepObj.puzzleType === 'ordered_runes') {
+              const allPriorActive = activeStepObj.runePlates
+                .filter((prev) => prev.index < rp.index)
+                .every((prev) => state.activatedRuneIds.includes(prev.id));
+              if (!allPriorActive) {
+                const stageRuneIds = new Set(
+                  activeStepObj.runePlates.map((p) => p.id)
+                );
+                state.activatedRuneIds = state.activatedRuneIds.filter(
+                  (id) => !stageRuneIds.has(id)
+                );
+                result.resetRunesWrongOrder = true;
+                break;
+              }
+            }
+
+            if (
+              activeStepObj.puzzleType === 'timed_runes' &&
+              state.runePuzzleTimer <= 0
+            ) {
+              state.runePuzzleTimer = activeStepObj.runeTimeLimitSec || 6.5;
+            }
             state.activatedRuneIds.push(rp.id);
             result.activatedRunePlate = true;
           }
@@ -1350,6 +1584,7 @@ export function advancePlayerPhysics(
       }
       if (isStepGateUnlocked(activeStepObj, state)) {
         state.unlockedGateSteps.push(activeStepObj.stepNumber);
+        state.runePuzzleTimer = 0;
         result.unlockedTrailGate = true;
       }
     }
@@ -1425,7 +1660,7 @@ export function advancePlayerPhysics(
       const barSin = Math.sin(activeRuntime.sweeperAngle);
       const dot = relX * barCos + relZ * barSin;
       const perp = Math.abs(-relX * barSin + relZ * barCos);
-      if (Math.abs(dot) < halfW * 0.85 && perp < 0.34) {
+      if (Math.abs(dot) < Math.min(halfW, halfD) * 0.64 && perp < 0.32) {
         state.vx = -barSin * 5.2;
         state.vz = barCos * 5.2;
         state.vy = 2.4;
@@ -1469,20 +1704,19 @@ export function advancePlayerPhysics(
             }
           }
 
-          // 1b. Also resolve solid collisions against the grounded cliff pillars of low stages (Stages 1-3)
-          // so the player on Step 0 can NEVER walk through the underside rock block of Stage 1 or Stage 2!
-          for (let lowIdx = 0; lowIdx < 3; lowIdx++) {
-            const lowStep = LEVELS_500[lowIdx];
-            if (!lowStep) continue;
-            if (lowStep.y - lowStep.supportDepth <= GROUND_FLOOR_Y + 1.2) {
+          // 1b. Also resolve solid collisions against the grounded North Bank abutment of Stage 1
+          // when walking on the North Bank outside the bridge approach!
+          if (state.z < VALLEY_BRIDGE_BOUNDS.minZ - 0.2) {
+            const lowStep = LEVELS_500[0];
+            if (lowStep) {
               const resPillar = resolveCircleAabbCollision(
                 state.x,
                 state.z,
                 PLAYER_COLLISION_RADIUS,
                 lowStep.x,
                 lowStep.z,
-                lowStep.width * 0.46,
-                lowStep.depth * 0.46
+                lowStep.width * 0.44,
+                lowStep.depth * 0.42
               );
               if (resPillar.collided) {
                 state.x = resPillar.x;
@@ -1557,38 +1791,43 @@ export function advancePlayerPhysics(
         relX = state.x - platCenterX;
         relZ = state.z - platCenterZ;
 
-        // Smooth directional jump guidance: when walking on the stage without charging,
-        // gently align aimAngle toward the next stage's center so the player always has clear jump direction!
+        // Unassisted movement heading: walking on a stage turns the character along their actual
+        // movement direction (ZERO auto-aim magnetism toward the next stage!)
         if (
           !state.isCharging &&
-          (Math.abs(effMoveX) > 0.05 || Math.abs(effMoveZ) > 0.05) &&
-          activeStepObj.stepNumber < TOTAL_LEVELS
+          (Math.abs(effMoveX) > 0.05 || Math.abs(effMoveZ) > 0.05)
         ) {
-          const nextStepObj = LEVELS_500[activeStepObj.stepNumber];
-          if (nextStepObj) {
-            const nextRt = getStepRuntimeOffset(nextStepObj, elapsedTime + 0.5, 0);
-            const targetAngle = Math.atan2(
-              nextStepObj.z + nextRt.offsetZ - state.z,
-              nextStepObj.x + nextRt.offsetX - state.x
-            );
-            const angleDiff = Math.atan2(
-              Math.sin(targetAngle - state.aimAngle),
-              Math.cos(targetAngle - state.aimAngle)
-            );
-            state.aimAngle += angleDiff * Math.min(1, simDt * 6.5);
-          }
+          const moveAngle = Math.atan2(effMoveZ, effMoveX);
+          const angleDiff = Math.atan2(
+            Math.sin(moveAngle - state.aimAngle),
+            Math.cos(moveAngle - state.aimAngle)
+          );
+          state.aimAngle += angleDiff * Math.min(1, simDt * 9.0);
+        }
+
+        // Overcharge muscle-fatigue tremor when holding jump charge too long
+        if (state.isCharging && state.chargeHoldTime > 1.05) {
+          state.aimAngle += Math.sin(elapsedTime * 36.0) * 0.015;
         }
 
         const normEdgeX = Math.abs(relX) / Math.max(0.1, halfW);
         const normEdgeZ = Math.abs(relZ) / Math.max(0.1, halfD);
         state.teeterAmount = Math.max(
           0,
-          Math.min(1, (Math.max(normEdgeX, normEdgeZ) - 0.68) / 0.32)
+          Math.min(1, (Math.max(normEdgeX, normEdgeZ) - 0.65) / 0.35)
         );
+
+        // Rim gravity slip: lingering on the outer 16% brink pulls boots outward toward the drop-off!
+        if (normEdgeX > 0.84) {
+          state.vx += Math.sign(relX) * 1.45 * simDt;
+        }
+        if (normEdgeZ > 0.84) {
+          state.vz += Math.sign(relZ) * 1.45 * simDt;
+        }
 
         const newRelX = Math.abs(state.x - platCenterX);
         const newRelZ = Math.abs(state.z - platCenterZ);
-        if (newRelX > halfW + 0.16 || newRelZ > halfD + 0.16) {
+        if (newRelX > halfW + 0.06 || newRelZ > halfD + 0.06) {
           state.grounded = false;
           state.isTumbling = true;
         } else {
@@ -1626,6 +1865,7 @@ export function advancePlayerPhysics(
     state.x += state.vx * simDt;
     state.y += state.vy * simDt;
     state.z += state.vz * simDt;
+    state.peakAirborneY = Math.max(state.peakAirborneY ?? prevY, state.y);
 
     // 1. Mid-Air Solid Collision against Valley Buildings & Trees when flying low over Base Camp
     if (state.y < GROUND_FLOOR_Y + 3.4) {
@@ -1654,7 +1894,10 @@ export function advancePlayerPhysics(
       }
     }
 
-    const maxCheckIdx = Math.min(LEVELS_500.length - 1, state.peakStep + 8);
+    const maxCheckIdx = Math.min(
+      LEVELS_500.length - 1,
+      Math.max(state.currentStep, state.peakStep) + 8
+    );
     for (let i = maxCheckIdx; i >= 0; i--) {
       const plat = LEVELS_500[i];
       if (Math.abs(plat.y - state.y) > 2.6) continue;
@@ -1664,13 +1907,19 @@ export function advancePlayerPhysics(
 
       const cx = plat.x + rt.offsetX;
       const cz = plat.z + rt.offsetZ;
-      const halfW = plat.width * 0.5 + 0.14;
-      const halfD = plat.depth * 0.5 + 0.14;
+      const halfW = plat.width * 0.5 + 0.04;
+      const halfD = plat.depth * 0.5 + 0.04;
       const topY = plat.y;
       const bottomY = plat.y - plat.height;
 
       // 2. Mid-Air Collision against On-Deck Boulders, Totems, Trees & Locked Rune Gates!
-      if (state.y >= topY - 0.12 && state.y <= topY + 1.35) {
+      // When descending onto a higher stage (plat.stepNumber > state.currentStep && state.vy <= 0),
+      // let Top Surface Touchdown land the player on the deck and slide them cleanly outside any obstacle.
+      if (
+        (plat.stepNumber <= state.currentStep || state.vy > 0) &&
+        state.y >= topY - 0.12 &&
+        state.y <= topY + 1.35
+      ) {
         if (
           Math.abs(state.x - cx) <= halfW + 0.35 &&
           Math.abs(state.z - cz) <= halfD + 0.35
@@ -1709,8 +1958,10 @@ export function advancePlayerPhysics(
 
           state.y = topY;
           state.vy = 0;
-          state.vx *= plat.friction < 0.35 ? 0.78 : 0.25;
-          state.vz *= plat.friction < 0.35 ? 0.25 : 0.25;
+          // Preserve realistic landing momentum slide across both X and Z axes!
+          const landingSlide = plat.friction < 0.35 ? 0.82 : 0.36;
+          state.vx *= landingSlide;
+          state.vz *= landingSlide;
           state.grounded = true;
           state.isTumbling = false;
           state.tumbleSpin = 0;
@@ -1735,15 +1986,6 @@ export function advancePlayerPhysics(
           }
           state.currentStep = plat.stepNumber;
 
-          if (plat.stepNumber < TOTAL_LEVELS) {
-            const nextStep = LEVELS_500[plat.stepNumber];
-            const nextRt = getStepRuntimeOffset(nextStep, elapsedTime + 0.5, 0);
-            state.aimAngle = Math.atan2(
-              nextStep.z + nextRt.offsetZ - state.z,
-              nextStep.x + nextRt.offsetX - state.x
-            );
-          }
-
           if (lost >= 1) {
             state.fallsCount += 1;
             if (lost > state.biggestFallLoss) {
@@ -1758,6 +2000,12 @@ export function advancePlayerPhysics(
             result.stepsLost = lost;
           }
 
+          const dropMeters = Math.max(
+            0,
+            Number(((state.peakAirborneY ?? prevY) - topY).toFixed(2))
+          );
+          result.fallDropMeters = dropMeters;
+          state.peakAirborneY = topY;
           state.lastStableStep = plat.stepNumber;
           result.landedStep = plat.stepNumber;
 
@@ -1790,6 +2038,31 @@ export function advancePlayerPhysics(
           }
           state.isTumbling = true;
           result.bouncedOffLedge = true;
+        }
+      }
+
+      // 5. Branching Decoy Ledge Trap Touchdown (Shatter or Repulsor Branch!)
+      if (plat.decoyLedge && state.vy <= 0.5) {
+        const dec = plat.decoyLedge;
+        if (
+          prevY >= dec.y - 0.36 &&
+          state.y <= dec.y + 0.24 &&
+          Math.abs(state.x - dec.x) <= dec.width * 0.5 &&
+          Math.abs(state.z - dec.z) <= dec.depth * 0.5
+        ) {
+          if (dec.trapType === 'repulsor') {
+            state.vy = 5.6;
+            state.vx = (state.x - plat.x) * 1.4;
+            state.vz = (state.z - plat.z) * 1.4;
+          } else {
+            state.vy = -3.8;
+            state.vx *= 0.4;
+            state.vz *= 0.4;
+          }
+          state.isTumbling = true;
+          result.knockedByHazard = true;
+          result.bouncedOffLedge = true;
+          break;
         }
       }
     }
@@ -1867,6 +2140,12 @@ export function advancePlayerPhysics(
         result.fellToLowerStep = true;
         result.stepsLost = lost;
       }
+      const dropMeters = Math.max(
+        0,
+        Number(((state.peakAirborneY ?? prevY) - state.y).toFixed(2))
+      );
+      result.fallDropMeters = dropMeters;
+      state.peakAirborneY = state.y;
       result.landedStep = 0;
     }
   }
@@ -2144,3 +2423,706 @@ export function computeStepTransitionDynamics(
     lerpRateY,
   };
 }
+
+// ============================================================================
+// ZOOM IN / ZOOM OUT SYSTEM, MOUSE AIMING & CONTROLLER CONFIGURATION
+// ============================================================================
+
+export interface ControlSettings {
+  mouseAimEnabled: boolean;
+  mouseAimSensitivity: number; // 0.5 to 2.0
+  controllerEnabled: boolean;
+  controllerDeadzone: number; // 0.08 to 0.40
+  controllerAimSensitivity: number; // 0.5 to 2.0
+  controllerVibration: boolean;
+  invertControllerY: boolean;
+}
+
+export const DEFAULT_CONTROL_SETTINGS: ControlSettings = {
+  mouseAimEnabled: true,
+  mouseAimSensitivity: 1.0,
+  controllerEnabled: true,
+  controllerDeadzone: 0.16,
+  controllerAimSensitivity: 1.0,
+  controllerVibration: true,
+  invertControllerY: false,
+};
+
+export const MIN_CAMERA_ZOOM_FACTOR = 0.22; // Whole-World Mountain Overview
+export const MAX_CAMERA_ZOOM_FACTOR = 1.85; // Close-up Tactical Zoom
+export const WHOLE_WORLD_ZOOM_FACTOR = 0.26;
+
+export function clampCameraZoomFactor(zoomFactor: number): number {
+  if (!Number.isFinite(zoomFactor)) return 1.0;
+  return Math.max(
+    MIN_CAMERA_ZOOM_FACTOR,
+    Math.min(MAX_CAMERA_ZOOM_FACTOR, Number(zoomFactor.toFixed(3)))
+  );
+}
+
+export interface WorldZoomMetrics {
+  clampedFactor: number;
+  effectiveCameraZoom: number;
+  maxVisibleStep: number;
+  bypassForegroundCulling: boolean;
+  verticalLookOffset: number;
+  zoomPercentLabel: string;
+  isWholeWorldOverview: boolean;
+}
+
+/**
+ * Computes camera zoom, visible stage horizon, and vertical spire framing
+ * when zooming in/out on the Title Screen (before starting the climb) or in-game.
+ */
+export function computeWorldZoomMetrics(
+  zoomFactor: number,
+  baseCameraZoom: number,
+  currentStep: number,
+  isTitlePreview: boolean,
+  altitudePanOffset = 0
+): WorldZoomMetrics {
+  const clampedFactor = clampCameraZoomFactor(zoomFactor);
+  const isWholeWorldOverview = clampedFactor <= 0.68;
+
+  // Expand visible stages dramatically as the player zooms out so they can see the whole world of the stages
+  const zoomOutRatio =
+    clampedFactor < 1.0
+      ? (1.0 - clampedFactor) / (1.0 - MIN_CAMERA_ZOOM_FACTOR)
+      : 0;
+  const extraStages = Math.round(zoomOutRatio * 95);
+
+  const baseMaxVis = isTitlePreview ? 12 : currentStep + 12;
+  const maxVisibleStep = Math.min(
+    TOTAL_LEVELS,
+    Math.max(baseMaxVis, currentStep + 12 + extraStages)
+  );
+
+  // Lift camera lookAt vertically by ~9.5m at full zoom-out so Base Camp stays in the lower third while 30+ stages rise above
+  const autoSpireRise = zoomOutRatio * 9.5;
+  const verticalLookOffset = autoSpireRise + altitudePanOffset;
+
+  // Scale orthographic zoom down further when in Whole-World Overview so a 55m x 34m world panorama fits on screen
+  const wholeWorldScale =
+    clampedFactor < 1.0 ? Math.pow(clampedFactor, 1.22) : clampedFactor;
+  const effectiveCameraZoom = Math.max(
+    0.26,
+    Math.min(4.2, baseCameraZoom * wholeWorldScale)
+  );
+
+  return {
+    clampedFactor,
+    effectiveCameraZoom,
+    maxVisibleStep,
+    bypassForegroundCulling: isWholeWorldOverview,
+    verticalLookOffset,
+    zoomPercentLabel: `${Math.round(clampedFactor * 100)}%`,
+    isWholeWorldOverview,
+  };
+}
+
+/**
+ * Converts a 2D screen-space direction vector (e.g. mouse vector from player to cursor,
+ * or controller Right Stick X/Y) into a 3D world-space ground aim angle (radians)
+ * relative to the active camera's horizontal offset `(camOffsetX, camOffsetZ)`.
+ */
+export function computeCameraRelativeWorldAngle(
+  screenRightDelta: number,
+  screenUpDelta: number,
+  camOffsetX: number,
+  camOffsetZ: number
+): number {
+  const fwdLen = Math.hypot(camOffsetX, camOffsetZ) || 1;
+  // Camera looks from (focus + offset) toward focus, so camera ground forward is (-offsetX, -offsetZ)
+  const camFwdX = -camOffsetX / fwdLen;
+  const camFwdZ = -camOffsetZ / fwdLen;
+  // Screen-right in Three.js (F x Up) is (-camFwdZ, camFwdX)
+  const camRightX = -camFwdZ;
+  const camRightZ = camFwdX;
+
+  const worldDirX = camRightX * screenRightDelta + camFwdX * screenUpDelta;
+  const worldDirZ = camRightZ * screenRightDelta + camFwdZ * screenUpDelta;
+  return Math.atan2(worldDirZ, worldDirX);
+}
+
+/**
+ * Applies a smooth radial deadzone to a 2D controller thumbstick input `(rawX, rawY)`.
+ */
+export function applyControllerDeadzone(
+  rawX: number,
+  rawY: number,
+  deadzone = 0.16
+): { x: number; y: number; magnitude: number } {
+  const clampedDz = Math.max(0.02, Math.min(0.6, deadzone));
+  const mag = Math.hypot(rawX, rawY);
+  if (mag <= clampedDz) {
+    return { x: 0, y: 0, magnitude: 0 };
+  }
+  const normalizedMag = Math.min(1, (mag - clampedDz) / (1 - clampedDz));
+  const scale = normalizedMag / mag;
+  return {
+    x: rawX * scale,
+    y: rawY * scale,
+    magnitude: normalizedMag,
+  };
+}
+
+// ============================================================================
+// HEIGHT-SCALED SCREEN SHAKE ON FALLS
+// ============================================================================
+
+export interface FallScreenShakeProfile {
+  triggered: boolean;
+  trauma: number; // 0.0 to 1.0
+  durationSec: number;
+  intensityLabel: 'NONE' | 'TREMOR' | 'HEAVY IMPACT' | 'CATASTROPHIC QUAKE';
+  fallDropMeters: number;
+  stepsLost: number;
+}
+
+export interface ScreenShakeSample {
+  offsetX: number;
+  offsetY: number;
+  offsetZ: number;
+  rollRad: number;
+  hudTranslateX: number; // px
+  hudTranslateY: number; // px
+}
+
+/**
+ * Computes a trauma-based screen-shake profile whenever the player falls from a height
+ * (`fallDropMeters >= 1.1` or `stepsLost >= 1`).
+ */
+export function computeFallScreenShake(
+  fallDropMeters: number,
+  stepsLost: number
+): FallScreenShakeProfile {
+  const cleanDrop = Math.max(0, Number.isFinite(fallDropMeters) ? fallDropMeters : 0);
+  const cleanLost = Math.max(0, Number.isFinite(stepsLost) ? Math.round(stepsLost) : 0);
+
+  if (cleanLost <= 0 && cleanDrop < 1.1) {
+    return {
+      triggered: false,
+      trauma: 0,
+      durationSec: 0,
+      intensityLabel: 'NONE',
+      fallDropMeters: cleanDrop,
+      stepsLost: cleanLost,
+    };
+  }
+
+  const dropContribution = Math.min(0.52, cleanDrop * 0.075);
+  const stepContribution = Math.min(0.55, cleanLost * 0.055);
+  const trauma = Number(
+    Math.min(1.0, Math.max(0.28, 0.22 + dropContribution + stepContribution)).toFixed(3)
+  );
+  const durationSec = Number(
+    Math.min(1.45, 0.36 + cleanDrop * 0.045 + cleanLost * 0.04).toFixed(2)
+  );
+
+  const intensityLabel: FallScreenShakeProfile['intensityLabel'] =
+    trauma >= 0.78 || cleanLost >= 8
+      ? 'CATASTROPHIC QUAKE'
+      : trauma >= 0.48 || cleanLost >= 3
+      ? 'HEAVY IMPACT'
+      : 'TREMOR';
+
+  return {
+    triggered: true,
+    trauma,
+    durationSec,
+    intensityLabel,
+    fallDropMeters: Number(cleanDrop.toFixed(2)),
+    stepsLost: cleanLost,
+  };
+}
+
+/**
+ * Samples deterministic multi-frequency camera and HUD shake offsets using quadratic `trauma * trauma` decay.
+ */
+export function sampleScreenShakeOffset(
+  trauma: number,
+  elapsedTime: number
+): ScreenShakeSample {
+  const clamped = Math.max(0, Math.min(1, trauma));
+  if (clamped <= 0.005) {
+    return {
+      offsetX: 0,
+      offsetY: 0,
+      offsetZ: 0,
+      rollRad: 0,
+      hudTranslateX: 0,
+      hudTranslateY: 0,
+    };
+  }
+  const power = clamped * clamped;
+  const waveX =
+    Math.sin(elapsedTime * 43.0) * 0.65 + Math.cos(elapsedTime * 67.0) * 0.35;
+  const waveY =
+    Math.cos(elapsedTime * 51.0) * 0.7 + Math.sin(elapsedTime * 79.0) * 0.3;
+  const waveZ =
+    Math.sin(elapsedTime * 37.0) * 0.6 + Math.cos(elapsedTime * 59.0) * 0.4;
+
+  return {
+    offsetX: Number((waveX * power * 0.58).toFixed(4)),
+    offsetY: Number((waveY * power * 0.68).toFixed(4)),
+    offsetZ: Number((waveZ * power * 0.52).toFixed(4)),
+    rollRad: Number((Math.sin(elapsedTime * 47.0) * power * 0.042).toFixed(4)),
+    hudTranslateX: Number((waveX * power * 14.0).toFixed(2)),
+    hudTranslateY: Number((waveY * power * 16.0).toFixed(2)),
+  };
+}
+
+// ============================================================================
+// GHOST / PHANTOM CLIMBER TRAJECTORY RECORDING & PLAYBACK SYSTEM
+// ============================================================================
+
+export interface GhostSamplePoint {
+  t: number; // seconds from jump takeoff
+  x: number;
+  y: number;
+  z: number;
+  vy: number;
+  aimAngle: number;
+}
+
+export interface GhostTrajectoryRun {
+  id: string;
+  label: string;
+  skin: 'cauldron' | 'frog' | 'chicken' | 'astronaut';
+  isRival: boolean;
+  fromStep: number;
+  toStep: number;
+  peakY: number;
+  duration: number;
+  outcome: 'landed' | 'fell';
+  samples: GhostSamplePoint[];
+}
+
+export interface GhostPlaybackPose {
+  x: number;
+  y: number;
+  z: number;
+  vy: number;
+  aimAngle: number;
+  opacity: number;
+  phaseRatio: number;
+  isPlummeting: boolean;
+}
+
+/**
+ * Generates deterministic rival & phantom climber trajectories across the mountain stages
+ * so players immediately see spectral climbers leaping and plummeting alongside them.
+ */
+export function createSeededRivalGhostRuns(): GhostTrajectoryRun[] {
+  const s0 = { x: GROUND_SPAWN_X, y: GROUND_FLOOR_Y, z: GROUND_SPAWN_Z };
+  const s1 = LEVELS_500[0];
+  const s2 = LEVELS_500[1];
+  const s3 = LEVELS_500[2];
+  const s4 = LEVELS_500[3];
+  const s5 = LEVELS_500[4];
+
+  const makeArcSamples = (
+    pA: { x: number; y: number; z: number },
+    pB: { x: number; y: number; z: number },
+    duration: number,
+    arcApexBoost: number,
+    numSamples = 14
+  ): GhostSamplePoint[] => {
+    const pts: GhostSamplePoint[] = [];
+    const aimAngle = Math.atan2(pB.z - pA.z, pB.x - pA.x);
+    for (let i = 0; i <= numSamples; i++) {
+      const u = i / numSamples;
+      const t = Number((u * duration).toFixed(3));
+      const x = pA.x + (pB.x - pA.x) * u;
+      const z = pA.z + (pB.z - pA.z) * u;
+      const baseLinearY = pA.y + (pB.y - pA.y) * u;
+      const parabola = 4 * u * (1 - u) * arcApexBoost;
+      const y = Number((baseLinearY + parabola).toFixed(3));
+      const vy = Number(((0.5 - u) * arcApexBoost * 5.2).toFixed(2));
+      pts.push({ t, x: Number(x.toFixed(3)), y, z: Number(z.toFixed(3)), vy, aimAngle });
+    }
+    return pts;
+  };
+
+  // Run 1: "Hermit Phantom" — cleanly vaults from Base Camp (0) -> Stage 1 -> Stage 2
+  const run1PartA = makeArcSamples(
+    { x: s0.x + 0.4, y: s0.y, z: s0.z - 0.6 },
+    { x: s1.x, y: s1.y, z: s1.z },
+    0.85,
+    1.35,
+    12
+  );
+  const run1PartB = makeArcSamples(
+    { x: s1.x, y: s1.y, z: s1.z },
+    { x: s2.x, y: s2.y, z: s2.z },
+    0.88,
+    1.45,
+    12
+  ).map((pt) => ({ ...pt, t: Number((pt.t + 1.05).toFixed(3)) }));
+  const run1Samples = [...run1PartA, ...run1PartB];
+
+  // Run 2: "Rival Icarus" — leaps from Stage 2 toward Stage 4, overshoots, and plummets back to Base Camp!
+  const overshootApex = {
+    x: s3.x + 0.9,
+    y: s3.y + 1.65,
+    z: s3.z - 0.8,
+  };
+  const crashFloor = {
+    x: s1.x + 1.4,
+    y: GROUND_FLOOR_Y,
+    z: s1.z + 1.1,
+  };
+  const run2Up = makeArcSamples(
+    { x: s2.x, y: s2.y, z: s2.z },
+    overshootApex,
+    0.65,
+    0.85,
+    10
+  );
+  const run2Plummet = makeArcSamples(
+    overshootApex,
+    crashFloor,
+    1.15,
+    -0.4,
+    14
+  ).map((pt) => ({
+    ...pt,
+    t: Number((pt.t + 0.68).toFixed(3)),
+    vy: -6.8,
+  }));
+  const run2Samples = [...run2Up, ...run2Plummet];
+
+  // Run 3: "Peak Echo" — vaults from Stage 3 -> Stage 4 -> Stage 5
+  const run3PartA = makeArcSamples(
+    { x: s3.x, y: s3.y, z: s3.z },
+    { x: s4.x, y: s4.y, z: s4.z },
+    0.86,
+    1.4,
+    12
+  );
+  const run3PartB = makeArcSamples(
+    { x: s4.x, y: s4.y, z: s4.z },
+    { x: s5.x, y: s5.y, z: s5.z },
+    0.9,
+    1.5,
+    12
+  ).map((pt) => ({ ...pt, t: Number((pt.t + 1.02).toFixed(3)) }));
+  const run3Samples = [...run3PartA, ...run3PartB];
+
+  return [
+    {
+      id: 'rival_hermit_phantom',
+      label: 'Hermit Phantom (Best Line)',
+      skin: 'frog',
+      isRival: true,
+      fromStep: 0,
+      toStep: 2,
+      peakY: s2.y + 1.45,
+      duration: 1.93,
+      outcome: 'landed',
+      samples: run1Samples,
+    },
+    {
+      id: 'rival_icarus_plummet',
+      label: 'Rival Icarus (-3 Stages)',
+      skin: 'chicken',
+      isRival: true,
+      fromStep: 2,
+      toStep: 0,
+      peakY: overshootApex.y,
+      duration: 1.83,
+      outcome: 'fell',
+      samples: run2Samples,
+    },
+    {
+      id: 'rival_peak_echo',
+      label: 'Peak Echo (Stage 3→5)',
+      skin: 'astronaut',
+      isRival: true,
+      fromStep: 3,
+      toStep: 5,
+      peakY: s5.y + 1.5,
+      duration: 1.92,
+      outcome: 'landed',
+      samples: run3Samples,
+    },
+  ];
+}
+
+/**
+ * Adds a newly recorded player jump/fall trajectory to the ghost pool,
+ * keeping rival ghosts, the player's highest-altitude Personal Best runs, and recent attempts.
+ */
+export function recordPlayerGhostRun(
+  existingRuns: GhostTrajectoryRun[],
+  newRun: GhostTrajectoryRun,
+  maxPlayerRuns = 12
+): GhostTrajectoryRun[] {
+  if (!newRun.samples || newRun.samples.length < 2) {
+    return existingRuns;
+  }
+  const rivals = existingRuns.filter((r) => r.isRival);
+  const playerRuns = existingRuns.filter((r) => !r.isRival && r.id !== newRun.id);
+  const combinedPlayer = [newRun, ...playerRuns];
+
+  // Always retain the player's highest peakY run as "Personal Best"
+  let bestRun: GhostTrajectoryRun | null = null;
+  for (const r of combinedPlayer) {
+    if (!bestRun || r.peakY > bestRun.peakY) {
+      bestRun = r;
+    }
+  }
+  if (bestRun) {
+    bestRun = {
+      ...bestRun,
+      label:
+        bestRun.outcome === 'fell'
+          ? `Your Tragic Fall (Stage ${bestRun.fromStep}→${bestRun.toStep})`
+          : `Your Best Vault (Stage ${bestRun.fromStep}→${bestRun.toStep})`,
+    };
+  }
+
+  const trimmedPlayer = combinedPlayer.slice(0, maxPlayerRuns).map((r, idx) =>
+    bestRun && r.id === bestRun.id
+      ? bestRun
+      : {
+          ...r,
+          label:
+            r.outcome === 'fell'
+              ? `Past Plummet #${idx + 1} (${r.fromStep}→${r.toStep})`
+              : `Past Vault #${idx + 1} (${r.fromStep}→${r.toStep})`,
+        }
+  );
+
+  return [...trimmedPlayer, ...rivals];
+}
+
+/**
+ * Samples a ghost climber's 3D position, velocity, facing angle, and holographic opacity at `elapsedTime`.
+ */
+export function sampleGhostPoseAtTime(
+  run: GhostTrajectoryRun,
+  elapsedTime: number,
+  loopOffsetSec = 0
+): GhostPlaybackPose {
+  const samples = run.samples;
+  if (!samples || samples.length === 0) {
+    return {
+      x: GROUND_SPAWN_X,
+      y: GROUND_FLOOR_Y,
+      z: GROUND_SPAWN_Z,
+      vy: 0,
+      aimAngle: 0,
+      opacity: 0,
+      phaseRatio: 0,
+      isPlummeting: false,
+    };
+  }
+  if (samples.length === 1) {
+    const s = samples[0];
+    return {
+      x: s.x,
+      y: s.y,
+      z: s.z,
+      vy: s.vy,
+      aimAngle: s.aimAngle,
+      opacity: 0.55,
+      phaseRatio: 0,
+      isPlummeting: false,
+    };
+  }
+
+  const totalDuration = Math.max(0.25, run.duration || samples[samples.length - 1].t);
+  const pausePadding = 0.55; // brief pause at start/end of loop
+  const cycleLength = totalDuration + pausePadding;
+  const localClock = ((elapsedTime + loopOffsetSec) % cycleLength + cycleLength) % cycleLength;
+  const clampedT = Math.min(totalDuration, localClock);
+  const phaseRatio = Number((clampedT / totalDuration).toFixed(3));
+
+  // Find bracketing samples
+  let idxA = 0;
+  for (let i = 0; i < samples.length - 1; i++) {
+    if (samples[i].t <= clampedT) {
+      idxA = i;
+    } else {
+      break;
+    }
+  }
+  const idxB = Math.min(samples.length - 1, idxA + 1);
+  const sA = samples[idxA];
+  const sB = samples[idxB];
+  const segSpan = Math.max(0.0001, sB.t - sA.t);
+  const alpha = idxA === idxB ? 0 : Math.max(0, Math.min(1, (clampedT - sA.t) / segSpan));
+
+  const x = sA.x + (sB.x - sA.x) * alpha;
+  const y = sA.y + (sB.y - sA.y) * alpha;
+  const z = sA.z + (sB.z - sA.z) * alpha;
+  const vy = sA.vy + (sB.vy - sA.vy) * alpha;
+  const aimAngle = sA.aimAngle;
+
+  // Fade in smoothly at start and fade out during pause padding
+  let opacity = 0.68;
+  if (localClock < 0.15) {
+    opacity = (localClock / 0.15) * 0.68;
+  } else if (localClock > totalDuration) {
+    const fadeProgress = (localClock - totalDuration) / pausePadding;
+    opacity = Math.max(0.12, (1 - fadeProgress) * 0.68);
+  }
+
+  return {
+    x: Number(x.toFixed(3)),
+    y: Number(y.toFixed(3)),
+    z: Number(z.toFixed(3)),
+    vy: Number(vy.toFixed(2)),
+    aimAngle,
+    opacity: Number(opacity.toFixed(3)),
+    phaseRatio,
+    isPlummeting: vy < -3.2,
+  };
+}
+
+// ============================================================================
+// ICONIC TRAIL GUIDES & OFFLINE FALLBACKS FOR GEMINI LIVE NARRATOR / NPC Q&A
+// ============================================================================
+
+export const ICONIC_TRAIL_GUIDES: TrailNpcData[] = [
+  GROUND_STEP_META.npc!,
+  {
+    id: 'guide_hermit_goat',
+    name: 'Old Goat Billy',
+    species: 'goat',
+    role: 'Hermit Goat of the Crags',
+    propType: 'lookout_bench',
+    behavior: 'cynical',
+    blocksPathByDefault: false,
+    relX: -0.8,
+    relZ: 0.6,
+    idleBark: 'Two hooves on granite beat four wings of hubris, climber.',
+    fallRoast: 'I chewed salt moss for forty winters and never fell that loud.',
+    greeting:
+      'Baa-hah! Another biped staring up at 500 ledges with trembling knees. Ask your question before the crosswind takes your hat.',
+    choices: [
+      {
+        label: 'How do goats never slip on icy ledges?',
+        response:
+          'We respect the edge. You charge your legs to 100% like a catapult with a death wish.',
+        action: 'altitude_hint',
+      },
+      {
+        label: 'Share your calm crag wisdom.',
+        response:
+          'Breathe slow. Every stage is just a boulder waiting for your hooves to stop rushing.',
+        action: 'heal_rage',
+      },
+      {
+        label: 'Leave the Hermit Goat in peace.',
+        response: 'Keep your center of gravity low, wayfarer.',
+        action: 'close',
+      },
+    ],
+  },
+  {
+    id: 'guide_cynical_crow',
+    name: 'Corvus the Watcher',
+    species: 'crow',
+    role: 'Cynical Crow · Abyss Tallykeeper',
+    propType: 'pond_sign',
+    behavior: 'cynical',
+    blocksPathByDefault: false,
+    relX: 0.85,
+    relZ: -0.55,
+    idleBark: 'Caw! I have a betting pool with the hawks on your next ledge bonk.',
+    fallRoast: 'Spectacular trajectory! Zero points for landing, ten points for crater depth.',
+    greeting:
+      'Caw-caw! Look who is still clinging to the mountain. Ask me anything, featherless plummet-artist—I see the whole spire from up here.',
+    choices: [
+      {
+        label: 'What lies above Stage 100?',
+        response:
+          'Thin stratospheric air, jetstream gales, and far longer falls for me to laugh at.',
+        action: 'altitude_hint',
+      },
+      {
+        label: 'Mock my climbing technique.',
+        response:
+          'Technique? Calling your frantic spacebar mashing "technique" is an insult to gravity.',
+        action: 'roast_back',
+      },
+      {
+        label: 'End conversation.',
+        response: 'See you at the bottom of the ravine in thirty seconds! Caw!',
+        action: 'close',
+      },
+    ],
+  },
+];
+
+export interface FallRoastContext {
+  fromStep: number;
+  toStep: number;
+  stepsLost: number;
+  fallDropMeters: number;
+  rageScore: number;
+  fallsCount: number;
+  outfitName?: string;
+}
+
+export function buildOfflineFallRoast(ctx: FallRoastContext): {
+  quote: string;
+  author: string;
+} {
+  const { fromStep, toStep, stepsLost, fallDropMeters, rageScore, fallsCount } = ctx;
+  const dropStr = fallDropMeters.toFixed(1);
+
+  if (stepsLost >= 15 || fallDropMeters >= 12) {
+    return {
+      quote: `From Stage ${fromStep} all the way down to Stage ${toStep}—a ${dropStr}m vertical catastrophe. At Rage ${rageScore}/100 after ${fallsCount} falls, even Sisyphus is asking if you want a helmet.`,
+      author: 'Hawk Peak AI Narrator',
+    };
+  }
+  if (stepsLost >= 5) {
+    return {
+      quote: `You spent all that patience reaching Stage ${fromStep}, only to donate ${stepsLost} stages (${dropStr}m) back to the mountain in two seconds. Gravity remains undefeated at Stage ${toStep}.`,
+      author: 'Hawk Peak AI Narrator',
+    };
+  }
+  if (stepsLost >= 1) {
+    return {
+      quote: `A ${dropStr}m slip from Stage ${fromStep} down to Stage ${toStep} (-${stepsLost} stage${stepsLost === 1 ? '' : 's'}). Fall #${fallsCount} brings your Rage to ${rageScore}—just enough sting to make the next jump personal.`,
+      author: 'Hawk Peak AI Narrator',
+    };
+  }
+  return {
+    quote: `A bone-rattling ${dropStr}m drop onto Stage ${toStep}. You kept your footing, though your knees and dignity absorbed the entire impact.`,
+    author: 'Hawk Peak AI Narrator',
+  };
+}
+
+export interface NpcAskContext {
+  npcName: string;
+  npcSpecies: string;
+  npcRole: string;
+  question: string;
+  currentStep: number;
+  peakStep: number;
+  fallsCount: number;
+  rageScore: number;
+}
+
+export function buildOfflineNpcReply(ctx: NpcAskContext): string {
+  const q = ctx.question.trim();
+  const species = ctx.npcSpecies.toLowerCase();
+
+  if (species === 'goat') {
+    return `Baa-hah! You ask "${q}" at Stage ${ctx.currentStep} after ${ctx.fallsCount} tumbles? Listen to an old crag goat: stop charging your hooves past 70% on short ledges, watch the wind chevrons, and respect the granite.`;
+  }
+  if (species === 'crow') {
+    return `Caw! "${q}"? Bold question from someone with a Rage score of ${ctx.rageScore} who peaked at Stage ${ctx.peakStep}. Aim with your cursor or right stick toward the golden chevrons, or give me another free airshow!`;
+  }
+  if (species === 'bear') {
+    return `Ranger Barnaby adjusts his hat: "Regarding '${q}'—you're currently at Stage ${ctx.currentStep} (Peak: Stage ${ctx.peakStep}, Falls: ${ctx.fallsCount}). Remember to step on every glowing Rune Plate to drop the energy gates before vaulting!"`;
+  }
+  return `${ctx.npcName} nods thoughtfully at Stage ${ctx.currentStep}: "You ask '${q}'. Keep your eyes on the next terrace's golden launch compass and time your jump charge carefully."`;
+}
+
+

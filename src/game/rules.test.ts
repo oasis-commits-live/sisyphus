@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import {
   TOTAL_LEVELS,
   LEVELS_500,
+  MOUNTAIN_CORE_X,
+  MOUNTAIN_CORE_Z,
   generate500Levels,
   getAtmosphericLayerForStep,
   VALLEY_SOLID_COLLIDERS,
@@ -19,35 +21,111 @@ import {
   computeNpcPovCameraRig,
   getAutoCameraModeForStep,
   isStepGateUnlocked,
+  computeSpiralCameraOffset,
 } from './rules';
 
-test('generate500Levels generates 500 grounded multi-element stages with varied size archetypes ascending into space', () => {
+test('generate500Levels generates 500 grounded mountain cliff stages spiraling 360 degrees around the central mountain core with random difficulty and stage puzzles', () => {
   const levels = generate500Levels(42);
   assert.equal(levels.length, TOTAL_LEVELS);
   assert.equal(levels[0].stepNumber, 1);
   assert.equal(levels[499].stepNumber, 500);
 
   const archetypes = new Set<string>();
+  const difficultyValues = new Set<number>();
+  const firstTenDiffs = new Set<number>();
+  const puzzleTypes = new Set<string>();
+  const spiralQuadrants = new Set<number>();
   let minWidth = Infinity;
   let maxWidth = 0;
 
   for (let i = 0; i < levels.length; i++) {
     archetypes.add(levels[i].stageArchetype);
+    difficultyValues.add(levels[i].difficultyRating);
+    puzzleTypes.add(levels[i].puzzleType);
+    if (i < 10) firstTenDiffs.add(levels[i].difficultyRating);
+
+    const dxCore = levels[i].x - MOUNTAIN_CORE_X;
+    const dzCore = levels[i].z - MOUNTAIN_CORE_Z;
+    const quad = (dxCore >= 0 ? 1 : 0) + (dzCore >= 0 ? 2 : 0);
+    spiralQuadrants.add(quad);
+
     minWidth = Math.min(minWidth, levels[i].width);
     maxWidth = Math.max(maxWidth, levels[i].width);
-    assert.ok(levels[i].supportDepth >= 3.8, `Step ${i + 1} should have deep grounded mountain support`);
+    assert.ok(
+      levels[i].supportDepth >= 8.0,
+      `Step ${i + 1} should have deep grounded mountain cliff support`
+    );
+    assert.equal(
+      levels[i].decoyLedge,
+      undefined,
+      `Step ${i + 1} should not have confusing floating decoy ledges`
+    );
+    if (i < 14) {
+      assert.ok(
+        levels[i].z <= -3.5,
+        `Low-altitude Step ${i + 1} should stay north of Base Camp South Bank (z=${levels[i].z})`
+      );
+    }
+
     if (i > 0) {
-      assert.ok(levels[i].y > levels[i - 1].y, `Step ${i + 1} should be higher than step ${i}`);
+      assert.ok(
+        levels[i].y > levels[i - 1].y,
+        `Step ${i + 1} should climb higher than step ${i}`
+      );
+      const stepDist = Math.hypot(
+        levels[i].x - levels[i - 1].x,
+        levels[i].z - levels[i - 1].z
+      );
+      assert.ok(
+        stepDist >= 3.5 && stepDist <= 9.0 && levels[i].clearGap >= 1.0 && levels[i].clearGap <= 1.8,
+        `Step ${i + 1} should have reachable non-linear spiral spacing (stepDist=${stepDist}, clearGap=${levels[i].clearGap})`
+      );
     }
   }
 
-  assert.ok(archetypes.size >= 5, 'Stages should permute across at least 5 distinct size/shape archetypes');
-  assert.ok(maxWidth - minWidth >= 2.2, 'Stages should have wide size variation between narrow ridges and grand sanctuaries');
+  assert.equal(
+    spiralQuadrants.size,
+    4,
+    'Stages should spiral 360 degrees around all 4 quadrants of the central mountain core'
+  );
+  assert.ok(
+    puzzleTypes.has('boulder_socket') &&
+      puzzleTypes.has('ordered_runes') &&
+      puzzleTypes.has('timed_runes') &&
+      puzzleTypes.has('crusher_gauntlet'),
+    'Stages should feature boulder_socket, ordered_runes, timed_runes, and crusher_gauntlet puzzles'
+  );
 
-  const puzzleStageCount = levels.filter((s) => s.requiresSwitch && s.runePlates.length > 0).length;
-  const obstacleStageCount = levels.filter((s) => s.deckObstacles.length > 0).length;
-  assert.ok(puzzleStageCount > 180, 'Many stages should feature multi-rune gate puzzles');
+  assert.equal(
+    difficultyValues.size,
+    10,
+    'Stages should randomly roll across all 10 difficulty ratings (1/10 to 10/10)'
+  );
+  assert.ok(
+    firstTenDiffs.size >= 6 &&
+      Math.max(...firstTenDiffs) >= 9 &&
+      Math.min(...firstTenDiffs) <= 3,
+    'Even the first 10 stages should feature random difficulty variation from calm breathers (<=3) to extreme gauntlets (>=9)'
+  );
+  assert.ok(
+    archetypes.size >= 5,
+    'Stages should permute across at least 5 distinct size/shape archetypes'
+  );
+  assert.ok(
+    maxWidth - minWidth >= 2.2,
+    'Stages should have wide size variation between narrow ridges and grand sanctuaries'
+  );
+
+  const puzzleStageCount = levels.filter(
+    (s) => s.requiresSwitch && s.runePlates.length > 0
+  ).length;
+  const obstacleStageCount = levels.filter(
+    (s) => s.deckObstacles.length > 0
+  ).length;
+  const rollingStoneCount = levels.filter((s) => s.hazard === 'pusher').length;
+  assert.ok(puzzleStageCount >= 460, 'Almost all stages should feature interactive puzzles');
   assert.ok(obstacleStageCount > 300, 'Most stages should feature physical on-deck roadblocks');
+  assert.ok(rollingStoneCount >= 80, 'Many stages should feature Sisyphean rolling boulders');
 });
 
 test('getAtmosphericLayerForStep progresses from valley to deep space above step 100', () => {
@@ -137,21 +215,77 @@ test('river water channel and arched bridge physics behave realistically', () =>
   assert.ok(state.x > startX + 0.2, 'River current should push wading player downstream along +X');
 });
 
-test('multi-rune stage gate blocks front launch edge until all runes on that stage are stepped on', () => {
-  const lockedStep = LEVELS_500.find((s) => s.requiresSwitch && s.runePlates.length >= 2)!;
-  assert.ok(lockedStep, 'Should find a multi-rune locked stage');
+test('interactive stage puzzles (ordered_runes, boulder_socket, timed_runes) and radial spiral camera behave accurately', () => {
+  // 1. Ordered Runes: stepping out of order resets runes; stepping in order 1 -> 2 -> ... unlocks gate
+  const orderedStep = LEVELS_500.find(
+    (s) => s.puzzleType === 'ordered_runes' && s.runePlates.length >= 2 && !s.requiresBoulderSocket
+  )!;
+  assert.ok(orderedStep, 'Should find an ordered_runes stage');
 
-  const state = createInitialPlayerState(lockedStep.stepNumber);
-  assert.equal(isStepGateUnlocked(lockedStep, state), false);
+  const state = createInitialPlayerState(orderedStep.stepNumber);
+  assert.equal(isStepGateUnlocked(orderedStep, state), false);
 
-  // Step onto each rune plate on the stage
-  for (const rune of lockedStep.runePlates) {
-    state.x = lockedStep.x + rune.relX;
-    state.z = lockedStep.z + rune.relZ;
+  // Step on the 2nd rune first (wrong order) -> should reset
+  const secondRune = orderedStep.runePlates[1];
+  state.x = orderedStep.x + secondRune.relX;
+  state.z = orderedStep.z + secondRune.relZ;
+  const wrongRes = advancePlayerPhysics(state, 1 / 60, 0, 0, 0);
+  assert.equal(wrongRes.resetRunesWrongOrder, true, 'Stepping on rune #2 before #1 should trigger wrong-order reset');
+  assert.equal(state.activatedRuneIds.includes(secondRune.id), false);
+
+  // Now step onto each rune plate in exact sequence #1 -> #2 -> ...
+  for (const rune of orderedStep.runePlates) {
+    state.x = orderedStep.x + rune.relX;
+    state.z = orderedStep.z + rune.relZ;
     advancePlayerPhysics(state, 1 / 60, 0, 0, 0);
   }
+  assert.equal(isStepGateUnlocked(orderedStep, state), true, 'Stage gate should unlock after activating ordered runes in sequence');
 
-  assert.equal(isStepGateUnlocked(lockedStep, state), true, 'Stage gate should unlock after activating all rune plates');
+  // 2. Sisyphus Boulder Socket Puzzle: pushing the boulder into the altar socket + stepping on rune unlocks gate
+  const boulderStep = LEVELS_500.find((s) => s.puzzleType === 'boulder_socket' && s.requiresBoulderSocket)!;
+  assert.ok(boulderStep, 'Should find a boulder_socket puzzle stage');
+  const bState = createInitialPlayerState(boulderStep.stepNumber);
+  for (const rune of boulderStep.runePlates) {
+    bState.activatedRuneIds.push(rune.id);
+  }
+  assert.equal(isStepGateUnlocked(boulderStep, bState), false, 'Gate remains locked until Sisyphus boulder is pushed into altar socket');
+
+  // Position boulder halfway up the slope and leave it unattended -> it should roll back toward its pedestal
+  bState.puzzleBoulderStep = boulderStep.stepNumber;
+  bState.puzzleBoulderRelX =
+    (boulderStep.boulderStartRelX + boulderStep.boulderSocketRelX) * 0.5;
+  bState.puzzleBoulderRelZ =
+    (boulderStep.boulderStartRelZ + boulderStep.boulderSocketRelZ) * 0.5;
+  const initialDistToStart = Math.hypot(
+    bState.puzzleBoulderRelX - boulderStep.boulderStartRelX,
+    bState.puzzleBoulderRelZ - boulderStep.boulderStartRelZ
+  );
+  // Stand away from the boulder midpoint (which is near 0,0) so we are not touching/pushing it
+  bState.x = boulderStep.x + 1.1;
+  bState.z = boulderStep.z - 1.1;
+  advancePlayerPhysics(bState, 0.25, 0, 0, 0);
+  const rolledDistToStart = Math.hypot(
+    bState.puzzleBoulderRelX - boulderStep.boulderStartRelX,
+    bState.puzzleBoulderRelZ - boulderStep.boulderStartRelZ
+  );
+  assert.ok(
+    rolledDistToStart < initialDistToStart,
+    'Unattended Sisyphus boulder should roll back downhill toward its pedestal before locking'
+  );
+
+  // Position boulder just beside the altar socket and push it in
+  bState.puzzleBoulderStep = boulderStep.stepNumber;
+  bState.puzzleBoulderRelX = boulderStep.boulderSocketRelX - 0.12;
+  bState.puzzleBoulderRelZ = boulderStep.boulderSocketRelZ;
+  bState.x = boulderStep.x + bState.puzzleBoulderRelX - 0.55;
+  bState.z = boulderStep.z + bState.puzzleBoulderRelZ;
+  const pushRes = advancePlayerPhysics(bState, 1 / 60, 0, 1, 0);
+  assert.equal(pushRes.lockedBoulderInSocket, true, 'Pushing boulder into altar socket should lock it');
+  assert.equal(isStepGateUnlocked(boulderStep, bState), true, 'Gate unlocks once boulder socket and rune are both active');
+
+  // 3. Radial Spiral Camera Offset always points outward from the central mountain core
+  const camNorth = computeSpiralCameraOffset(120, MOUNTAIN_CORE_X, MOUNTAIN_CORE_Z - 14, 'isometric');
+  assert.ok(camNorth.offsetZ < -8, 'When stage is north of mountain core, camera should sit further north looking south');
 });
 
 test('logical gravity fall lands naturally on lower surface without random teleportation', () => {
@@ -191,3 +325,236 @@ test('pure jump vault launches player upward and computeNpcPovCameraRig frames N
   assert.ok(Number.isFinite(rig.camPosX) && Number.isFinite(rig.camPosY) && Number.isFinite(rig.camPosZ));
   assert.ok(Number.isFinite(rig.lookAtX) && Number.isFinite(rig.lookAtY) && Number.isFinite(rig.lookAtZ));
 });
+
+test('computeWorldZoomMetrics, computeCameraRelativeWorldAngle, and applyControllerDeadzone support world scout zoom, mouse aim, and gamepad controls', async () => {
+  const {
+    computeWorldZoomMetrics,
+    computeCameraRelativeWorldAngle,
+    applyControllerDeadzone,
+  } = await import('./rules');
+
+  // 1. Zoom out to Whole-World View on Title Screen before starting the climb
+  const defaultZoom = computeWorldZoomMetrics(1.0, 2.36, 0, true, 0);
+  const wholeWorldZoom = computeWorldZoomMetrics(0.26, 2.36, 0, true, 0);
+  assert.equal(defaultZoom.isWholeWorldOverview, false);
+  assert.equal(wholeWorldZoom.isWholeWorldOverview, true);
+  assert.ok(
+    wholeWorldZoom.maxVisibleStep > defaultZoom.maxVisibleStep + 50,
+    'Zooming out to Whole-World View should reveal dozens of mountain stages'
+  );
+  assert.ok(
+    wholeWorldZoom.effectiveCameraZoom < defaultZoom.effectiveCameraZoom,
+    'Zooming out should reduce effective orthographic zoom'
+  );
+
+  // 2. Camera-relative mouse/stick aim projection
+  const angleRight = computeCameraRelativeWorldAngle(1, 0, 0, 14);
+  const angleUp = computeCameraRelativeWorldAngle(0, 1, 0, 14);
+  assert.notEqual(angleRight, angleUp);
+  assert.ok(Math.abs(angleRight - 0) < 0.01, 'Screen-right with +Z camera offset should map to +X world angle (0 rad)');
+  assert.ok(Math.abs(angleUp - -Math.PI / 2) < 0.01, 'Screen-up with +Z camera offset should map to -Z world angle (-PI/2 rad)');
+
+  // 3. Controller deadzone filtering
+  const insideDz = applyControllerDeadzone(0.08, -0.05, 0.16);
+  assert.equal(insideDz.magnitude, 0);
+  assert.equal(insideDz.x, 0);
+  assert.equal(insideDz.y, 0);
+
+  const outsideDz = applyControllerDeadzone(0.8, 0.0, 0.16);
+  assert.ok(outsideDz.magnitude > 0.7 && outsideDz.magnitude <= 1.0);
+  assert.ok(outsideDz.x > 0.7);
+});
+
+test('computeFallScreenShake and sampleScreenShakeOffset scale impact trauma with fall height and steps lost', async () => {
+  const { computeFallScreenShake, sampleScreenShakeOffset } = await import('./rules');
+
+  const noFall = computeFallScreenShake(0.3, 0);
+  assert.equal(noFall.triggered, false);
+  assert.equal(noFall.trauma, 0);
+
+  const minorDrop = computeFallScreenShake(2.2, 1);
+  assert.equal(minorDrop.triggered, true);
+  assert.ok(minorDrop.trauma >= 0.28);
+
+  const catastrophicDrop = computeFallScreenShake(14.5, 12);
+  assert.equal(catastrophicDrop.triggered, true);
+  assert.equal(catastrophicDrop.intensityLabel, 'CATASTROPHIC QUAKE');
+  assert.ok(catastrophicDrop.trauma > minorDrop.trauma);
+  assert.ok(catastrophicDrop.durationSec > minorDrop.durationSec);
+
+  const shakeSample = sampleScreenShakeOffset(catastrophicDrop.trauma, 1.23);
+  assert.ok(
+    Math.abs(shakeSample.offsetX) > 0 || Math.abs(shakeSample.offsetY) > 0,
+    'Active trauma should produce non-zero 3D camera & HUD screen-shake offsets'
+  );
+  assert.ok(
+    Math.abs(shakeSample.hudTranslateX) > 0 || Math.abs(shakeSample.hudTranslateY) > 0
+  );
+});
+
+test('Ghost / Phantom Climber system seeds rival ghosts, records player trajectories, and interpolates 3D playback', async () => {
+  const {
+    createSeededRivalGhostRuns,
+    recordPlayerGhostRun,
+    sampleGhostPoseAtTime,
+  } = await import('./rules');
+
+  const seeded = createSeededRivalGhostRuns();
+  assert.ok(seeded.length >= 3, 'Should seed at least 3 rival phantom trajectories');
+
+  const customRun = {
+    id: 'player_attempt_1',
+    label: 'Attempt 1',
+    skin: 'cauldron' as const,
+    isRival: false,
+    fromStep: 0,
+    toStep: 1,
+    peakY: 2.4,
+    duration: 0.9,
+    outcome: 'landed' as const,
+    samples: [
+      { t: 0, x: 0, y: -1.35, z: 0, vy: 6.5, aimAngle: 0.5 },
+      { t: 0.45, x: 0.8, y: 1.4, z: -0.6, vy: 0.2, aimAngle: 0.5 },
+      { t: 0.9, x: 1.5, y: -0.5, z: -1.1, vy: -4.0, aimAngle: 0.5 },
+    ],
+  };
+
+  const updated = recordPlayerGhostRun(seeded, customRun);
+  assert.equal(updated.length, seeded.length + 1);
+  assert.ok(updated.some((r) => r.id === 'player_attempt_1' && r.label.includes('Your Best Vault')));
+
+  const poseMid = sampleGhostPoseAtTime(customRun, 0.45, 0);
+  assert.ok(poseMid.y > 0.5, 'Mid-jump ghost pose should be elevated near apex');
+  assert.ok(poseMid.opacity > 0.2, 'Active ghost pose should be visible');
+});
+
+test('buildOfflineFallRoast and buildOfflineNpcReply generate context-aware narrator roasts and persona replies', async () => {
+  const { buildOfflineFallRoast, buildOfflineNpcReply } = await import('./rules');
+
+  const roast = buildOfflineFallRoast({
+    fromStep: 18,
+    toStep: 2,
+    stepsLost: 16,
+    fallDropMeters: 13.8,
+    rageScore: 74,
+    fallsCount: 6,
+  });
+  assert.ok(roast.quote.includes('18') && roast.quote.includes('2'), 'Roast should mention exact steps');
+  assert.ok(roast.quote.includes('13.8m'), 'Roast should mention exact fall drop height');
+
+  const goatReply = buildOfflineNpcReply({
+    npcName: 'Old Goat Billy',
+    npcSpecies: 'goat',
+    npcRole: 'Hermit Goat',
+    question: 'How do I clear the icy ridge?',
+    currentStep: 12,
+    peakStep: 19,
+    fallsCount: 4,
+    rageScore: 42,
+  });
+  assert.ok(goatReply.includes('Baa-hah') && goatReply.includes('Stage 12'));
+
+  const crowReply = buildOfflineNpcReply({
+    npcName: 'Corvus the Watcher',
+    npcSpecies: 'crow',
+    npcRole: 'Cynical Crow',
+    question: 'Why are you laughing at me?',
+    currentStep: 8,
+    peakStep: 14,
+    fallsCount: 5,
+    rageScore: 58,
+  });
+  assert.ok(crowReply.includes('Caw') && crowReply.includes('58'));
+});
+
+test('Full 500-stage audit verifies every stage 1..500 is valid, jump-solvable, and milestones 100/200/300/400/500 are stable sanctuaries', async () => {
+  const { LEVELS_500, TOTAL_LEVELS } = await import('./levels');
+  const {
+    createInitialPlayerState,
+    computeIdealJumpToNextStep,
+    computePredictedLandingSpot,
+    advancePlayerPhysics,
+    computeJumpVelocity,
+  } = await import('./rules');
+
+  assert.equal(LEVELS_500.length, 500);
+  assert.equal(TOTAL_LEVELS, 500);
+
+  // Check every 100th milestone stage (100, 200, 300, 400, 500)
+  for (const milestone of [100, 200, 300, 400, 500]) {
+    const stepObj = LEVELS_500[milestone - 1];
+    assert.equal(stepObj.stepNumber, milestone);
+    assert.equal(
+      stepObj.hazard,
+      'none',
+      `Milestone Stage ${milestone} should be a stable sanctuary (hazard: none)`
+    );
+    assert.ok(
+      stepObj.npc,
+      `Milestone Stage ${milestone} should have a Trail Guide NPC stationed`
+    );
+  }
+
+  // Verify all 499 stage-to-stage transitions have valid ideal jump solutions
+  for (let s = 0; s < TOTAL_LEVELS; s++) {
+    const p = createInitialPlayerState(s);
+    const nextStep = LEVELS_500[s];
+    const ideal = computeIdealJumpToNextStep(s, 0, {
+      x: p.x,
+      y: p.y,
+      z: p.z,
+    });
+    assert.ok(
+      Number.isFinite(ideal.aimAngle) &&
+        ideal.chargeRatio >= 0.2 &&
+        ideal.chargeRatio <= 1.0,
+      `Stage ${s} -> ${s + 1} should have a finite ideal jump solution`
+    );
+    const pred = computePredictedLandingSpot(
+      p.x,
+      p.y,
+      p.z,
+      ideal.chargeRatio,
+      ideal.aimAngle,
+      nextStep,
+      0
+    );
+    assert.ok(
+      Number.isFinite(pred.x) && Number.isFinite(pred.z),
+      `Predicted landing spot for Stage ${s + 1} must be finite`
+    );
+  }
+
+  // Simulate jumping from Stage 499 onto Stage 500 (Astral Summit) and triggering victory
+  const p499 = createInitialPlayerState(499);
+  p499.unlockedGateSteps.push(499);
+  const st499 = LEVELS_500[498];
+  for (const rp of st499.runePlates) {
+    p499.activatedRuneIds.push(rp.id);
+  }
+  const ideal500 = computeIdealJumpToNextStep(499, 0, {
+    x: p499.x,
+    y: p499.y,
+    z: p499.z,
+  });
+  const vel500 = computeJumpVelocity(ideal500.chargeRatio, ideal500.aimAngle);
+  p499.aimAngle = ideal500.aimAngle;
+  p499.vx = vel500.vx;
+  p499.vy = vel500.vy;
+  p499.vz = vel500.vz;
+  p499.grounded = false;
+
+  let reached500 = false;
+  for (let frame = 0; frame < 120; frame++) {
+    const res = advancePlayerPhysics(p499, 1 / 60, frame / 60, 0, 0);
+    if (res.reachedSummit || p499.won || p499.currentStep === 500) {
+      reached500 = true;
+      break;
+    }
+  }
+  assert.equal(reached500, true, 'Jumping from Stage 499 should land on Stage 500 and reach the summit');
+  assert.equal(p499.won, true);
+});
+
+
+

@@ -14,6 +14,9 @@ import {
   GROUND_STEP_META,
   LEVELS_500,
   LevelStep,
+  MOUNTAIN_CORE_X,
+  MOUNTAIN_CORE_Z,
+  StagePuzzleType,
   TOTAL_LEVELS,
   TrailNpcData,
   VALLEY_BRIDGE_BOUNDS,
@@ -25,19 +28,30 @@ import {
   CAMERA_ANGLE_PRESETS,
   CAMERA_SHIFT_INTERVAL_STEPS,
   CameraAngleMode,
+  ControlSettings,
+  DEFAULT_CONTROL_SETTINGS,
+  GhostSamplePoint,
+  GhostTrajectoryRun,
   LiveWindState,
   PlayerState,
   advanceChargeState,
   advancePlayerPhysics,
+  applyControllerDeadzone,
+  clampCameraZoomFactor,
   clearBlockingNpcForStep,
   computeAimAlignment,
+  computeCameraRelativeWorldAngle,
+  computeFallScreenShake,
   computeIdealJumpToNextStep,
   computeJumpVelocity,
   computeNpcPhysicalState,
   computeNpcPovCameraRig,
   computePredictedLandingSpot,
+  computeSpiralCameraOffset,
   computeStepTransitionDynamics,
+  computeWorldZoomMetrics,
   createInitialPlayerState,
+  createSeededRivalGhostRuns,
   findNearbyNpc,
   getAltitudeAwareNpcDialogue,
   getAutoCameraModeForStep,
@@ -45,6 +59,9 @@ import {
   getLiveWindVector,
   getStepRuntimeOffset,
   isStepGateUnlocked,
+  recordPlayerGhostRun,
+  sampleGhostPoseAtTime,
+  sampleScreenShakeOffset,
   selectPhilosophicalTaunt,
 } from '../game/rules';
 import { soundEngine } from '../game/audio';
@@ -134,6 +151,11 @@ export interface TelemetryPayload {
   stepTitle: string;
   stepTrapText: string;
   stepDifficulty: number;
+  puzzleType: StagePuzzleType;
+  runeTimeRemaining: number;
+  requiresBoulderSocket: boolean;
+  boulderSocketLocked: boolean;
+  nextOrderedRuneIndex: number;
   hazardType: string;
   surfaceTheme: string;
   crumbleWarning: number;
@@ -165,7 +187,10 @@ interface IsometricCanvasProps {
     author: string,
     stepsLost: number,
     fromStep: number,
-    toStep: number
+    toStep: number,
+    fallDropMeters?: number,
+    shakeTrauma?: number,
+    shakeLabel?: string
   ) => void;
   onMilestoneReached: (
     stepNumber: number,
@@ -183,10 +208,32 @@ interface IsometricCanvasProps {
   isPaused: boolean;
   isTitlePreview?: boolean;
   initialStartStep?: number;
+  zoomFactor?: number;
+  altitudePanOffset?: number;
+  onZoomChange?: (nextZoom: number) => void;
+  onAltitudePanChange?: (nextOffset: number) => void;
+  controlSettings?: ControlSettings;
+  onGamepadStatusChange?: (connected: boolean, id: string | null) => void;
+  onGamepadAction?: (
+    action:
+      | 'start_game'
+      | 'toggle_pause'
+      | 'cycle_camera'
+      | 'toggle_world_zoom'
+      | 'next_skin'
+      | 'prev_skin'
+      | 'dialogue_up'
+      | 'dialogue_down'
+      | 'dialogue_confirm'
+      | 'dialogue_cancel'
+  ) => void;
+  ghostsEnabled?: boolean;
+  onGhostRunsChange?: (runs: GhostTrajectoryRun[]) => void;
 }
 
 interface RuneVisualEntry {
   id: string;
+  index: number;
   ringMesh: THREE.Mesh;
   crystalMesh: THREE.Mesh;
   ringMat: THREE.MeshStandardMaterial;
@@ -204,6 +251,9 @@ interface StepMeshEntry {
   pusherMesh?: THREE.Mesh;
   sweeperPivot?: THREE.Group;
   turntableDisc?: THREE.Mesh;
+  puzzleBoulderMesh?: THREE.Mesh;
+  boulderSocketGroup?: THREE.Group;
+  boulderSocketRingMat?: THREE.MeshStandardMaterial;
   gateBarrierGroup?: THREE.Group;
   gateEnergyMesh?: THREE.Mesh;
   gateEnergyMat?: THREE.MeshStandardMaterial;
@@ -391,9 +441,10 @@ function createProceduralSurfaceTextures(): {
   return { stoneBump, woodGrain, contactShadowTex };
 }
 
-//Reusable module-scope vectors to avoid per-frame GC allocations
+// Reusable module-scope vectors to avoid per-frame GC allocations
 const _camDir = new THREE.Vector3();
 const _unitScale = new THREE.Vector3(1, 1, 1);
+const _playerScreenVec = new THREE.Vector3();
 
 export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
   onTelemetryUpdate,
@@ -409,6 +460,15 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
   isPaused,
   isTitlePreview = false,
   initialStartStep = 0,
+  zoomFactor = 1.0,
+  altitudePanOffset = 0,
+  onZoomChange,
+  onAltitudePanChange,
+  controlSettings = DEFAULT_CONTROL_SETTINGS,
+  onGamepadStatusChange,
+  onGamepadAction,
+  ghostsEnabled = true,
+  onGhostRunsChange,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<PlayerState>(
@@ -446,12 +506,40 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
   const isTitlePreviewRef = useRef<boolean>(isTitlePreview);
   const activeDialogueNpcRef = useRef<TrailNpcData | null>(activeDialogueNpc);
   const outfitCelebrationRef = useRef<number>(0);
+  const zoomFactorRef = useRef<number>(zoomFactor);
+  const altitudePanOffsetRef = useRef<number>(altitudePanOffset);
+  const controlSettingsRef = useRef<ControlSettings>(controlSettings);
+  const ghostsEnabledRef = useRef<boolean>(ghostsEnabled);
+  const selectedOutfitIdRef = useRef<ClimberSkinId>(selectedOutfit.id);
+  const ghostRunsRef = useRef<GhostTrajectoryRun[]>([]);
+  const ghostRunsLoadedRef = useRef<boolean>(false);
+  if (!ghostRunsLoadedRef.current) {
+    ghostRunsLoadedRef.current = true;
+    let loaded: GhostTrajectoryRun[] = createSeededRivalGhostRuns();
+    try {
+      const saved = localStorage.getItem('hawk_peak_ghost_runs_v1');
+      if (saved) {
+        const parsed = JSON.parse(saved) as GhostTrajectoryRun[];
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          loaded = parsed;
+        }
+      }
+    } catch {
+      // Ignore storage errors
+    }
+    ghostRunsRef.current = loaded;
+  }
 
   const onTelemetryUpdateRef = useRef(onTelemetryUpdate);
   const onTauntTriggeredRef = useRef(onTauntTriggered);
   const onMilestoneReachedRef = useRef(onMilestoneReached);
   const onInteractNpcRef = useRef(onInteractNpc);
   const onAutoCameraShiftRef = useRef(onAutoCameraShift);
+  const onZoomChangeRef = useRef(onZoomChange);
+  const onAltitudePanChangeRef = useRef(onAltitudePanChange);
+  const onGamepadStatusChangeRef = useRef(onGamepadStatusChange);
+  const onGamepadActionRef = useRef(onGamepadAction);
+  const onGhostRunsChangeRef = useRef(onGhostRunsChange);
 
   useEffect(() => {
     onTelemetryUpdateRef.current = onTelemetryUpdate;
@@ -459,13 +547,43 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
     onMilestoneReachedRef.current = onMilestoneReached;
     onInteractNpcRef.current = onInteractNpc;
     onAutoCameraShiftRef.current = onAutoCameraShift;
+    onZoomChangeRef.current = onZoomChange;
+    onAltitudePanChangeRef.current = onAltitudePanChange;
+    onGamepadStatusChangeRef.current = onGamepadStatusChange;
+    onGamepadActionRef.current = onGamepadAction;
+    onGhostRunsChangeRef.current = onGhostRunsChange;
   }, [
     onTelemetryUpdate,
     onTauntTriggered,
     onMilestoneReached,
     onInteractNpc,
     onAutoCameraShift,
+    onZoomChange,
+    onAltitudePanChange,
+    onGamepadStatusChange,
+    onGamepadAction,
+    onGhostRunsChange,
   ]);
+
+  useEffect(() => {
+    ghostsEnabledRef.current = ghostsEnabled;
+  }, [ghostsEnabled]);
+
+  useEffect(() => {
+    selectedOutfitIdRef.current = selectedOutfit.id;
+  }, [selectedOutfit.id]);
+
+  useEffect(() => {
+    zoomFactorRef.current = zoomFactor;
+  }, [zoomFactor]);
+
+  useEffect(() => {
+    altitudePanOffsetRef.current = altitudePanOffset;
+  }, [altitudePanOffset]);
+
+  useEffect(() => {
+    controlSettingsRef.current = controlSettings;
+  }, [controlSettings]);
 
   useEffect(() => {
     activeCameraPresetRef.current = cameraPreset;
@@ -535,8 +653,8 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
       (frustumSize * aspect) / 2,
       frustumSize / 2,
       -frustumSize / 2,
-      0.5,
-      360
+      -140,
+      680
     );
 
     const renderer = new THREE.WebGLRenderer({
@@ -1115,14 +1233,13 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
     northBank.receiveShadow = true;
     baseCampGroup.add(northBank);
 
-    // Grounded Distant Mountain Range with Wide Foothill Buttresses (Anchored in the northern/western/eastern horizon arc so nothing blocks the southern camera!)
+    // Grounded Distant Mountain Range with Wide Foothill Buttresses (Anchored strictly on the (-X, -Z) background side so nothing ever blocks the ascending trail!)
     const mountainBackdropPositions: [number, number, number, number][] = [
-      [-28.5, GROUND_FLOOR_Y - 0.8, -26.5, 13.5],
-      [-16.8, GROUND_FLOOR_Y - 0.8, -31.2, 15.6],
-      [0.5, GROUND_FLOOR_Y - 0.8, -33.5, 16.8],
-      [18.5, GROUND_FLOOR_Y - 0.8, -30.4, 14.8],
-      [29.4, GROUND_FLOOR_Y - 0.8, -24.5, 12.8],
-      [-31.2, GROUND_FLOOR_Y - 0.8, -8.5, 12.2],
+      [-32.5, GROUND_FLOOR_Y - 0.8, -28.5, 14.5],
+      [-22.8, GROUND_FLOOR_Y - 0.8, -32.2, 16.2],
+      [-12.5, GROUND_FLOOR_Y - 0.8, -34.5, 17.4],
+      [-34.2, GROUND_FLOOR_Y - 0.8, -14.5, 13.4],
+      [-26.4, GROUND_FLOOR_Y - 0.8, -6.5, 12.2],
     ];
     const snowPeakMat = enhanceWithStylizedShader(
       new THREE.MeshStandardMaterial({
@@ -2151,73 +2268,151 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
       const scaleX = step.width / minDim;
       const scaleZ = step.depth / minDim;
 
-      // Tier 1A: Sculpted Upper Cliff Crown directly beneath the deck
+      // Tier 1A: Solid Terraced Mountain Rock Foundation directly beneath the deck
+      // Reaches down below the previous stage's elevation so no stage ever floats as a thin pad!
+      const prevStepObj = sIdx > 0 ? LEVELS_500[sIdx - 1] : null;
+      const crownHeight =
+        step.stepNumber === 1 ? 1.05 : Math.max(1.55, step.vertRise + 0.85);
       const rockUndersideGeo = new THREE.CylinderGeometry(
-        minDim * 0.52,
-        minDim * 0.42,
-        step.height * 1.15,
-        11
+        minDim * 0.51,
+        minDim * 0.58,
+        crownHeight,
+        10
       );
       const blockMesh = new THREE.Mesh(rockUndersideGeo, sideMat);
       blockMesh.scale.set(scaleX, 1, scaleZ);
-      blockMesh.position.y = -(step.height * 1.15) / 2 - 0.08;
+      blockMesh.position.y = -crownHeight * 0.5 - 0.06;
       blockMesh.castShadow = true;
       blockMesh.receiveShadow = true;
       group.add(blockMesh);
 
-      // Tier 1B: Deep Grounded Mountain Cliff Column / Buttress (Eliminates Floating Islands!)
-      const pillarTopR = minDim * 0.41;
-      const pillarBotR =
-        step.stepNumber <= 300 ? minDim * 0.56 : minDim * 0.18;
-      const deepColumnGeo = new THREE.CylinderGeometry(
-        pillarTopR,
-        pillarBotR,
-        step.supportDepth,
-        9
-      );
-      const deepColumnMesh = new THREE.Mesh(deepColumnGeo, sideMat);
-      deepColumnMesh.scale.set(scaleX * 0.92, 1, scaleZ * 0.92);
-      deepColumnMesh.position.y =
-        -step.height * 1.05 - step.supportDepth * 0.5;
-      deepColumnMesh.receiveShadow = true;
-      group.add(deepColumnMesh);
-
-      // Tier 1C: Diagonal Mountain Trestle / Rock Strut connecting back toward previous cliff face
-      if (step.stepNumber > 1 && step.stepNumber <= 320) {
-        const prevStepObj = LEVELS_500[sIdx - 1];
-        const backDx = prevStepObj.x - step.x;
-        const backDy = prevStepObj.y - step.y;
-        const backDz = prevStepObj.z - step.z;
-        const backDist = Math.hypot(backDx, backDy, backDz);
-        if (backDist < 12) {
-          const strutMesh = new THREE.Mesh(
-            new THREE.CylinderGeometry(0.24, 0.36, backDist * 0.85, 7),
-            step.stepNumber <= 100 ? railMat : sideMat
-          );
-          strutMesh.position.set(
-            backDx * 0.42,
-            backDy * 0.42 - 0.95,
-            backDz * 0.42
-          );
-          strutMesh.quaternion.setFromUnitVectors(
-            new THREE.Vector3(0, 1, 0),
-            new THREE.Vector3(backDx, backDy - 0.8, backDz).normalize()
-          );
-          group.add(strutMesh);
-        }
+      // Tier 1B: Stepped Organic Mountain Rock Buttresses connecting Stage (i - 1) to Stage i
+      // Eliminates floating air gaps between stages with natural stepped rock crags tucked beneath the jump gap!
+      const backDx = prevStepObj ? prevStepObj.x - step.x : -step.dirX * 3.4;
+      const backDy = prevStepObj ? prevStepObj.y - step.y : -0.85;
+      const backDz = prevStepObj ? prevStepObj.z - step.z : -step.dirZ * 3.4;
+      for (let rStep = 1; rStep <= 2; rStep++) {
+        const frac = rStep / 3;
+        const cragRadius = Math.min(step.width, step.depth) * (0.44 - rStep * 0.05);
+        const ridgeCrag = new THREE.Mesh(buttressGeo, sideMat);
+        ridgeCrag.scale.set(cragRadius * 3.2, 2.35, cragRadius * 3.2);
+        ridgeCrag.position.set(
+          backDx * frac,
+          backDy * frac - 0.72,
+          backDz * frac
+        );
+        ridgeCrag.rotation.set(0.15 * rStep, sIdx * 0.8 + rStep, -0.12);
+        ridgeCrag.receiveShadow = true;
+        group.add(ridgeCrag);
       }
 
-      // Tier 2: Organic Crag Boulders & Strata Ledges around the Cliff Rim
+      // Tier 1C: Sub-Deck Granite Spur + Central Mountain Core Peak (Oriented Radially Inward!)
+      // Connects every stage solidly into the Central Mountain Core below deck level (y <= -0.20)
+      // while keeping tall mountain peaks inside the central spine so inner switchback stages are 100% unobstructed!
+      const inwardX = -Math.cos(step.spiralAngleRad);
+      const inwardZ = -Math.sin(step.spiralAngleRad);
+      const stageDistFromCore = Math.hypot(
+        step.x - MOUNTAIN_CORE_X,
+        step.z - MOUNTAIN_CORE_Z
+      );
+
+      // Sub-deck granite spur arm extending from beneath the stage radially inward into the mountain core
+      const spurSpan = Math.max(3.6, stageDistFromCore - 5.2);
+      const spurBridge = new THREE.Mesh(
+        new THREE.BoxGeometry(spurSpan, 2.2, Math.min(step.width, step.depth) * 0.72),
+        sideMat
+      );
+      spurBridge.position.set(
+        inwardX * (spurSpan * 0.5 + 0.6),
+        -1.32,
+        inwardZ * (spurSpan * 0.5 + 0.6)
+      );
+      spurBridge.rotation.y = -step.spiralAngleRad;
+      spurBridge.receiveShadow = true;
+      group.add(spurBridge);
+
+      const cliffBackdropGroup = new THREE.Group();
+      const wallDist = Math.max(
+        Math.max(step.width, step.depth) * 0.55 + 3.2,
+        stageDistFromCore - 4.6
+      );
+      cliffBackdropGroup.position.set(
+        inwardX * wallDist,
+        -0.65,
+        inwardZ * wallDist
+      );
+      cliffBackdropGroup.rotation.y = -step.spiralAngleRad;
+
+      // 1. Wide Flared Mountain Rock Foothill Base (forms the central mountain spine)
+      const massifBase = new THREE.Mesh(
+        new THREE.CylinderGeometry(2.6, 3.8, 4.4, 8),
+        sideMat
+      );
+      massifBase.scale.set(1.15, 1.0, 1.12);
+      massifBase.position.set(-0.45, 0.25, 0);
+      massifBase.rotation.y = sIdx * 0.45;
+      massifBase.receiveShadow = true;
+      cliffBackdropGroup.add(massifBase);
+
+      // 2. Sculpted Multi-Faceted Crag Peak rising along the central mountain spine
+      const peakHeight = 4.4 + (sIdx % 3) * 0.75;
+      const cragPeak = new THREE.Mesh(
+        new THREE.ConeGeometry(2.55, peakHeight, 7),
+        sideMat
+      );
+      cragPeak.position.set(-0.65, 2.1 + peakHeight * 0.32, 0);
+      cragPeak.rotation.y = sIdx * 0.65;
+      cragPeak.receiveShadow = true;
+      cliffBackdropGroup.add(cragPeak);
+
+      // 3. Natural Mossy / Snowy / Golden Crown Cap on the Crag Peak
+      const peakCap = new THREE.Mesh(
+        new THREE.ConeGeometry(1.45, peakHeight * 0.44, 7),
+        step.biome >= 5 ? snowPeakMat : bankGrassMat
+      );
+      peakCap.position.set(-0.65, 2.1 + peakHeight * 0.61, 0);
+      peakCap.rotation.y = sIdx * 0.65;
+      cliffBackdropGroup.add(peakCap);
+
+      // 4. Secondary Flanking Rock Outcrop + Perched Alpine Tree or Carved Sisyphean Stone
+      const flankCrag = new THREE.Mesh(buttressGeo, trimMat);
+      flankCrag.scale.set(2.5, 2.0, 2.5);
+      flankCrag.position.set(-0.25, 1.05, 0.95);
+      flankCrag.rotation.set(0.2, sIdx * 1.1, -0.15);
+      cliffBackdropGroup.add(flankCrag);
+
+      if (step.biome <= 6) {
+        const cliffTree = buildSculptedTree(
+          step.biome,
+          1.05,
+          step.stepNumber + 7,
+          false
+        );
+        cliffTree.position.set(0.25, 2.15, -0.25);
+        cliffBackdropGroup.add(cliffTree);
+      } else {
+        // Carved Sisyphean Monument Stone embedded in the high cosmic cliffside
+        const cliffStone = new THREE.Mesh(
+          new THREE.DodecahedronGeometry(0.58, 1),
+          trimMat
+        );
+        cliffStone.position.set(0.25, 2.4, -0.25);
+        cliffBackdropGroup.add(cliffStone);
+      }
+
+      group.add(cliffBackdropGroup);
+
+      // Tier 2: Compact Organic Crag Boulders around the Terrace Rim
       for (let bIdx = 0; bIdx < 4; bIdx++) {
         const ang = (bIdx / 4) * Math.PI * 2 + 0.35;
         const buttress = new THREE.Mesh(
           buttressGeo,
           bIdx % 2 === 0 ? sideMat : trimMat
         );
-        buttress.scale.set(1.15, 1.45, 1.15);
+        buttress.scale.set(1.12, 0.75, 1.12);
         buttress.position.set(
           Math.cos(ang) * (step.width * 0.44),
-          -0.32,
+          -0.24,
           Math.sin(ang) * (step.depth * 0.44)
         );
         buttress.castShadow = true;
@@ -2301,6 +2496,8 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
       chev2.scale.setScalar(0.76);
       chev2.position.set(0.18, 0.02, 0);
       launchCompassGroup.add(chev1, chev2);
+      // Only show the directional launch compass on Stage 1; on Stages 2..500 the player must read the 3D mountain spiral themselves!
+      launchCompassGroup.visible = step.stepNumber <= 1;
       group.add(launchCompassGroup);
 
       // ============================================================================
@@ -2452,11 +2649,65 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
         }
       }
 
-      // Multi-Plate Rune Puzzle Nodes & Physical Front Launch Gate
+      // Multi-Plate Rune Puzzle Nodes, Sisyphus Boulder Altar Socket & Physical Front Launch Gate
       const runeVisuals: RuneVisualEntry[] = [];
       let gateBarrierGroup: THREE.Group | undefined;
       let gateEnergyMesh: THREE.Mesh | undefined;
       let gateEnergyMat: THREE.MeshStandardMaterial | undefined;
+      let puzzleBoulderMesh: THREE.Mesh | undefined;
+      let boulderSocketGroup: THREE.Group | undefined;
+      let boulderSocketRingMat: THREE.MeshStandardMaterial | undefined;
+
+      if (step.requiresBoulderSocket) {
+        boulderSocketGroup = new THREE.Group();
+        boulderSocketGroup.position.set(
+          step.boulderSocketRelX,
+          0.025,
+          step.boulderSocketRelZ
+        );
+        const basinRim = new THREE.Mesh(
+          new THREE.TorusGeometry(0.46, 0.06, 10, 24),
+          trimMat
+        );
+        basinRim.rotation.x = Math.PI / 2;
+        boulderSocketRingMat = new THREE.MeshStandardMaterial({
+          color: 0xfacc15,
+          emissive: 0xd97706,
+          emissiveIntensity: 1.15,
+          roughness: 0.2,
+          side: THREE.DoubleSide,
+        });
+        const socketGlow = new THREE.Mesh(
+          new THREE.RingGeometry(0.16, 0.4, 24),
+          boulderSocketRingMat
+        );
+        socketGlow.rotation.x = -Math.PI / 2;
+        socketGlow.position.y = 0.015;
+        boulderSocketGroup.add(basinRim, socketGlow);
+        group.add(boulderSocketGroup);
+
+        puzzleBoulderMesh = new THREE.Mesh(
+          new THREE.DodecahedronGeometry(0.38, 2),
+          cliffRockMat
+        );
+        const goldBand1 = new THREE.Mesh(
+          new THREE.TorusGeometry(0.37, 0.04, 8, 20),
+          launchCompassMat
+        );
+        goldBand1.rotation.x = Math.PI / 2;
+        const goldBand2 = new THREE.Mesh(
+          new THREE.TorusGeometry(0.37, 0.035, 8, 20),
+          launchCompassMat
+        );
+        puzzleBoulderMesh.add(goldBand1, goldBand2);
+        puzzleBoulderMesh.position.set(
+          step.boulderStartRelX,
+          0.38,
+          step.boulderStartRelZ
+        );
+        puzzleBoulderMesh.castShadow = true;
+        group.add(puzzleBoulderMesh);
+      }
 
       if (step.requiresSwitch && step.runePlates.length > 0) {
         for (const rp of step.runePlates) {
@@ -2482,6 +2733,7 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
 
           runeVisuals.push({
             id: rp.id,
+            index: rp.index,
             ringMesh,
             crystalMesh,
             ringMat,
@@ -2522,14 +2774,20 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
         group.add(gateBarrierGroup);
       }
 
-      // Dynamic Stage Hazards (Sculpted Rolling Boulder, Rotating Beam, Compass Turntable)
+      // Dynamic Stage Hazards (Sculpted Sisyphean Rolling Boulder, Rotating Beam, Compass Turntable)
       let pusherMesh: THREE.Mesh | undefined;
       if (step.hazard === 'pusher') {
         pusherMesh = new THREE.Mesh(
-          new THREE.DodecahedronGeometry(0.4, 1),
+          new THREE.DodecahedronGeometry(0.46, 2),
           cliffRockMat
         );
-        pusherMesh.position.set(0, 0.4, 0);
+        const sisyphusBand = new THREE.Mesh(
+          new THREE.TorusGeometry(0.44, 0.045, 8, 20),
+          launchCompassMat
+        );
+        sisyphusBand.rotation.x = Math.PI / 2;
+        pusherMesh.add(sisyphusBand);
+        pusherMesh.position.set(0, 0.44, 0);
         pusherMesh.castShadow = true;
         group.add(pusherMesh);
       }
@@ -2587,7 +2845,7 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
         group.add(npcGroup);
       }
 
-      // Summit 500 Astral Sanctuary Arch
+      // Summit 500 Astral Sanctuary Arch & Sisyphus's Eternal Rolling Stone Monument
       if (step.stepNumber === TOTAL_LEVELS) {
         const crownMat = new THREE.MeshStandardMaterial({
           color: 0xfacc15,
@@ -2597,11 +2855,30 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
           roughness: 0.15,
         });
         const torusArch = new THREE.Mesh(
-          new THREE.TorusGeometry(1.65, 0.15, 16, 40, Math.PI),
+          new THREE.TorusGeometry(1.85, 0.15, 16, 40, Math.PI),
           crownMat
         );
         torusArch.position.y = 0.25;
         group.add(torusArch);
+
+        // Pedestal & The Eternal Rolling Stone of Sisyphus resting at the top of the universe
+        const pedestal = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.75, 0.92, 0.36, 16),
+          trimMat
+        );
+        pedestal.position.set(0, 0.18, -0.35);
+        const eternalBoulder = new THREE.Mesh(
+          new THREE.DodecahedronGeometry(0.68, 2),
+          cliffRockMat
+        );
+        eternalBoulder.position.set(0, 0.82, -0.35);
+        const eternalBand = new THREE.Mesh(
+          new THREE.TorusGeometry(0.66, 0.055, 10, 24),
+          crownMat
+        );
+        eternalBand.rotation.x = Math.PI * 0.35;
+        eternalBoulder.add(eternalBand);
+        group.add(pedestal, eternalBoulder);
       }
 
       spireGroup.add(group);
@@ -2615,6 +2892,9 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
         pusherMesh,
         sweeperPivot,
         turntableDisc,
+        puzzleBoulderMesh,
+        boulderSocketGroup,
+        boulderSocketRingMat,
         gateBarrierGroup,
         gateEnergyMesh,
         gateEnergyMat,
@@ -2906,6 +3186,116 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
     };
 
     // ============================================================================
+    // 3D GHOST / PHANTOM CLIMBER HOLOGRAPHIC RIG POOL (3 Simultaneous Phantoms + Ribbon Trails)
+    // ============================================================================
+    interface PhantomRigEntry {
+      group: THREE.Group;
+      visual: THREE.Group;
+      cloakMat: THREE.MeshStandardMaterial;
+      ringMat: THREE.MeshBasicMaterial;
+      trailDots: THREE.Mesh[];
+      trailMat: THREE.MeshBasicMaterial;
+    }
+
+    const phantomPaletteHex = [0x38bdf8, 0xfacc15, 0xc084fc];
+    const phantomRigs: PhantomRigEntry[] = [];
+    const phantomTrailGeo = new THREE.SphereGeometry(0.055, 6, 6);
+
+    for (let gIdx = 0; gIdx < 3; gIdx++) {
+      const holoColor = phantomPaletteHex[gIdx % phantomPaletteHex.length];
+      const group = new THREE.Group();
+      const visual = new THREE.Group();
+      group.add(visual);
+
+      const cloakMat = new THREE.MeshStandardMaterial({
+        color: holoColor,
+        emissive: holoColor,
+        emissiveIntensity: 0.55,
+        roughness: 0.25,
+        metalness: 0.15,
+        transparent: true,
+        opacity: 0.52,
+        depthWrite: false,
+      });
+
+      const cloakMesh = new THREE.Mesh(
+        new THREE.ConeGeometry(0.28, 0.56, 9),
+        cloakMat
+      );
+      cloakMesh.position.y = 0.34;
+      visual.add(cloakMesh);
+
+      const hoodMesh = new THREE.Mesh(
+        new THREE.SphereGeometry(0.18, 9, 8),
+        cloakMat
+      );
+      hoodMesh.position.y = 0.65;
+      visual.add(hoodMesh);
+
+      const visorMesh = new THREE.Mesh(
+        new THREE.BoxGeometry(0.12, 0.06, 0.16),
+        new THREE.MeshBasicMaterial({
+          color: 0xffffff,
+          transparent: true,
+          opacity: 0.85,
+        })
+      );
+      visorMesh.position.set(0.12, 0.65, 0);
+      visual.add(visorMesh);
+
+      const ringMat = new THREE.MeshBasicMaterial({
+        color: holoColor,
+        transparent: true,
+        opacity: 0.55,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      });
+      const baseRing = new THREE.Mesh(
+        new THREE.RingGeometry(0.22, 0.32, 18),
+        ringMat
+      );
+      baseRing.rotation.x = -Math.PI / 2;
+      baseRing.position.y = 0.03;
+      group.add(baseRing);
+
+      const trailMat = new THREE.MeshBasicMaterial({
+        color: holoColor,
+        transparent: true,
+        opacity: 0.36,
+        depthWrite: false,
+      });
+      const trailDots: THREE.Mesh[] = [];
+      for (let d = 0; d < 8; d++) {
+        const dot = new THREE.Mesh(phantomTrailGeo, trailMat);
+        dot.visible = false;
+        scene.add(dot);
+        trailDots.push(dot);
+      }
+
+      group.visible = false;
+      scene.add(group);
+      phantomRigs.push({
+        group,
+        visual,
+        cloakMat,
+        ringMat,
+        trailDots,
+        trailMat,
+      });
+    }
+
+    // Active Jump Trajectory Recording State + Camera Trauma State
+    let isRecordingJump = false;
+    let jumpStartStep = 0;
+    let jumpStartElapsed = 0;
+    let jumpPeakY = GROUND_FLOOR_Y;
+    let activeJumpSamples: GhostSamplePoint[] = [];
+    let lastSampleElapsed = 0;
+    let cameraTrauma = 0;
+
+    onGhostRunsChangeRef.current?.(ghostRunsRef.current);
+
+    // ============================================================================
     // INPUT LISTENERS (Pure Jumping + Camera-Relative Steering + NPC POV Talk [E])
     // ============================================================================
     const beginCharge = () => {
@@ -2998,6 +3388,40 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
       beginCharge();
     };
 
+    const triggerGamepadRumble = (intensity: number, durationMs: number) => {
+      if (!controlSettingsRef.current.controllerEnabled) return;
+      if (!controlSettingsRef.current.controllerVibration) return;
+      try {
+        const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+        for (const gp of pads) {
+          if (!gp || !gp.connected) continue;
+          const actuator = (
+            gp as unknown as {
+              vibrationActuator?: {
+                playEffect?: (
+                  type: string,
+                  params: {
+                    startDelay: number;
+                    duration: number;
+                    weakMagnitude: number;
+                    strongMagnitude: number;
+                  }
+                ) => void;
+              };
+            }
+          ).vibrationActuator;
+          actuator?.playEffect?.('dual-rumble', {
+            startDelay: 0,
+            duration: durationMs,
+            weakMagnitude: Math.min(1, intensity * 0.8),
+            strongMagnitude: Math.min(1, intensity),
+          });
+        }
+      } catch {
+        // Ignore rumble errors on unsupported browsers
+      }
+    };
+
     const handlePointerUp = () => {
       releaseJump();
     };
@@ -3006,6 +3430,20 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
     let pointerNormY = 0;
     let dampedPointerX = 0;
     let dampedPointerY = 0;
+    let mouseAimAngle = playerRef.current.aimAngle;
+    let lastMouseAimTime = -10;
+    let lastManualAimTime = -10;
+
+    let frameId = 0;
+    let lastTime = performance.now();
+    let elapsedTime = 0;
+    let lastTelemetryEmit = 0;
+    let camFocusX = playerRef.current.x;
+    let camFocusY = playerRef.current.y + 1.1;
+    let camFocusZ = playerRef.current.z;
+    let currentCamPosX = camFocusX + 14.5;
+    let currentCamPosY = camFocusY + 14.8;
+    let currentCamPosZ = camFocusZ + 14.5;
 
     const handlePointerMove = (e: PointerEvent) => {
       if (!container) return;
@@ -3013,14 +3451,63 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
       if (rect.width > 0 && rect.height > 0) {
         pointerNormX = ((e.clientX - rect.left) / rect.width) * 2 - 1;
         pointerNormY = ((e.clientY - rect.top) / rect.height) * 2 - 1;
+
+        // Compute 3D world-space jump aim angle from player position to mouse cursor!
+        if (
+          !isTitlePreviewRef.current &&
+          !isPausedRef.current &&
+          !activeDialogueNpcRef.current &&
+          controlSettingsRef.current.mouseAimEnabled
+        ) {
+          const p = playerRef.current;
+          _playerScreenVec.set(p.x, p.y + 0.35, p.z).project(camera);
+          const dxScreen = pointerNormX - _playerScreenVec.x;
+          const dyScreen = -pointerNormY - _playerScreenVec.y;
+          if (Math.hypot(dxScreen, dyScreen) > 0.015) {
+            mouseAimAngle = computeCameraRelativeWorldAngle(
+              dxScreen,
+              dyScreen,
+              currentCamPosX - camFocusX,
+              currentCamPosZ - camFocusZ
+            );
+            lastMouseAimTime = elapsedTime;
+            lastManualAimTime = elapsedTime;
+            p.aimAngle = mouseAimAngle;
+          }
+        }
       }
+    };
+
+    const handleWheel = (e: WheelEvent) => {
+      if (activeDialogueNpcRef.current || isPausedRef.current) return;
+      e.preventDefault();
+      const deltaStep = Math.sign(e.deltaY) * 0.12;
+      const nextZoom = clampCameraZoomFactor(zoomFactorRef.current - deltaStep);
+      zoomFactorRef.current = nextZoom;
+      onZoomChangeRef.current?.(nextZoom);
+    };
+
+    const handleGamepadConnected = (e: GamepadEvent) => {
+      onGamepadStatusChangeRef.current?.(true, e.gamepad.id || 'Controller');
+    };
+
+    const handleGamepadDisconnected = () => {
+      const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+      const active = Array.from(pads).find((p) => p && p.connected);
+      onGamepadStatusChangeRef.current?.(
+        Boolean(active),
+        active ? active.id : null
+      );
     };
 
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('keyup', handleKeyUp);
     window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('gamepadconnected', handleGamepadConnected);
+    window.addEventListener('gamepaddisconnected', handleGamepadDisconnected);
     const domElem = renderer.domElement;
     domElem.addEventListener('pointerdown', handlePointerDown);
+    domElem.addEventListener('wheel', handleWheel, { passive: false });
     window.addEventListener('pointerup', handlePointerUp);
 
     const handleResize = () => {
@@ -3038,43 +3525,62 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
     };
     window.addEventListener('resize', handleResize);
 
-    let frameId = 0;
-    let lastTime = performance.now();
-    let elapsedTime = 0;
-    let lastTelemetryEmit = 0;
-    let camFocusX = playerRef.current.x;
-    let camFocusY = playerRef.current.y + 1.1;
-    let camFocusZ = playerRef.current.z;
-    let currentCamPosX = camFocusX + 14.5;
-    let currentCamPosY = camFocusY + 14.8;
-    let currentCamPosZ = camFocusZ + 14.5;
+    // Track previous gamepad button states for edge-triggered actions
+    let prevGpJumpHeld = false;
+    let prevGpButtons: boolean[] = [];
 
     // ============================================================================
     // QA DETERMINISTIC TEST HOOKS (window.__gameTestHooks & window.advanceTime)
     // ============================================================================
     (window as unknown as Record<string, unknown>).__gameTestHooks = {
       getState: () => ({ ...playerRef.current }),
+      setMouseAimAngle: (angleRad: number) => {
+        mouseAimAngle = angleRad;
+        lastMouseAimTime = elapsedTime;
+        lastManualAimTime = elapsedTime;
+        playerRef.current.aimAngle = angleRad;
+      },
+      setZoomFactor: (z: number) => {
+        const clamped = clampCameraZoomFactor(z);
+        zoomFactorRef.current = clamped;
+        onZoomChangeRef.current?.(clamped);
+      },
       teleportToStep: (stepNum: number) => {
         const nextPlayer = createInitialPlayerState(stepNum);
+        if (stepNum > 0) {
+          const st =
+            LEVELS_500[Math.max(0, Math.min(TOTAL_LEVELS - 1, stepNum - 1))];
+          if (st) {
+            const rt = getStepRuntimeOffset(st, elapsedTime, 0);
+            nextPlayer.x += rt.offsetX;
+            nextPlayer.z += rt.offsetZ;
+          }
+        }
         playerRef.current = nextPlayer;
         const autoCam = getAutoCameraModeForStep(stepNum);
         activeCameraPresetRef.current = autoCam;
-        const preset =
-          CAMERA_ANGLE_PRESETS[autoCam] || CAMERA_ANGLE_PRESETS.isometric;
+        const preset = computeSpiralCameraOffset(
+          stepNum,
+          nextPlayer.x,
+          nextPlayer.z,
+          autoCam
+        );
         camFocusX = nextPlayer.x;
         camFocusY = nextPlayer.y + 1.15;
         camFocusZ = nextPlayer.z;
         currentCamPosX = camFocusX + preset.offsetX;
         currentCamPosY = camFocusY + preset.offsetY;
         currentCamPosZ = camFocusZ + preset.offsetZ;
+        lastTelemetryEmit = 0;
         onAutoCameraShiftRef.current?.(autoCam, stepNum);
       },
       performIdealVault: () => {
         const p = playerRef.current;
-        const ideal = computeIdealJumpToNextStep(
-          p.currentStep,
-          performance.now() * 0.001
-        );
+        const ideal = computeIdealJumpToNextStep(p.currentStep, elapsedTime, {
+          x: p.x,
+          y: p.y,
+          z: p.z,
+        });
         p.aimAngle = ideal.aimAngle;
         const vel = computeJumpVelocity(ideal.chargeRatio, ideal.aimAngle);
         p.vx = vel.vx;
@@ -3092,6 +3598,15 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
                 p.activatedRuneIds.push(rp.id);
               }
             }
+            if (
+              st.requiresBoulderSocket &&
+              !p.boulderSocketUnlockedSteps.includes(st.stepNumber)
+            ) {
+              p.boulderSocketUnlockedSteps.push(st.stepNumber);
+              p.puzzleBoulderStep = st.stepNumber;
+              p.puzzleBoulderRelX = st.boulderSocketRelX;
+              p.puzzleBoulderRelZ = st.boulderSocketRelZ;
+            }
             if (!p.unlockedGateSteps.includes(st.stepNumber)) {
               p.unlockedGateSteps.push(st.stepNumber);
             }
@@ -3101,9 +3616,158 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
       clearCurrentStepNpc: () => {
         clearBlockingNpcForStep(playerRef.current);
       },
+      getGhostRuns: () => [...ghostRunsRef.current],
+      triggerTestFall: (stepsLost = 5, dropMeters = 6.4) => {
+        const p = playerRef.current;
+        const fromStep = Math.max(stepsLost, p.currentStep || stepsLost);
+        const toStep = Math.max(0, fromStep - stepsLost);
+        p.fallsCount += 1;
+        p.biggestFallLoss = Math.max(p.biggestFallLoss, stepsLost);
+        p.rageScore = Math.min(100, p.rageScore + Math.round(12 + stepsLost * 2.5));
+        p.currentStep = toStep;
+        p.lastStableStep = toStep;
+
+        const shake = computeFallScreenShake(dropMeters, stepsLost);
+        cameraTrauma = Math.max(cameraTrauma, shake.trauma);
+        const taunt = selectPhilosophicalTaunt(stepsLost, p.fallsCount);
+        soundEngine.playCatastrophicFall(stepsLost, taunt.quote);
+        onTauntTriggeredRef.current(
+          taunt.quote,
+          taunt.author,
+          stepsLost,
+          fromStep,
+          toStep,
+          shake.fallDropMeters,
+          shake.trauma,
+          shake.intensityLabel
+        );
+      },
     };
 
     const stepSimulation = (dt: number) => {
+      // Poll HTML5 Gamepad API every frame (works on Title Screen, Dialogue, Pause & Gameplay!)
+      let gpMoveX = 0;
+      let gpMoveZ = 0;
+      let gpRightX = 0;
+      let gpRightY = 0;
+      let gpRightMag = 0;
+
+      if (
+        controlSettingsRef.current.controllerEnabled &&
+        typeof navigator.getGamepads === 'function'
+      ) {
+        const pads = navigator.getGamepads();
+        const gp = Array.from(pads).find((pad) => pad && pad.connected);
+        if (gp) {
+          const dz = controlSettingsRef.current.controllerDeadzone;
+          const leftStick = applyControllerDeadzone(
+            gp.axes[0] || 0,
+            gp.axes[1] || 0,
+            dz
+          );
+          const rightStick = applyControllerDeadzone(
+            gp.axes[2] || 0,
+            gp.axes[3] || 0,
+            dz
+          );
+
+          const dpadLeft = gp.buttons[14]?.pressed ? -1 : 0;
+          const dpadRight = gp.buttons[15]?.pressed ? 1 : 0;
+          const dpadUp = gp.buttons[12]?.pressed ? -1 : 0;
+          const dpadDown = gp.buttons[13]?.pressed ? 1 : 0;
+
+          const invY = controlSettingsRef.current.invertControllerY ? -1 : 1;
+          gpMoveX = Math.max(-1, Math.min(1, leftStick.x + dpadLeft + dpadRight));
+          gpMoveZ = Math.max(
+            -1,
+            Math.min(1, leftStick.y * invY + dpadUp + dpadDown)
+          );
+
+          gpRightX = rightStick.x;
+          gpRightY = rightStick.y * invY;
+          gpRightMag = rightStick.magnitude;
+
+          const curButtons = gp.buttons.map((b) => Boolean(b?.pressed));
+          const wasPressed = (idx: number) =>
+            curButtons[idx] && !prevGpButtons[idx];
+
+          // Continuous Bumper / Trigger Zoom In & Out (LB / RB or LT)
+          if (curButtons[4]) {
+            const zNext = clampCameraZoomFactor(
+              zoomFactorRef.current - dt * 0.75
+            );
+            zoomFactorRef.current = zNext;
+            onZoomChangeRef.current?.(zNext);
+          } else if (curButtons[5]) {
+            const zNext = clampCameraZoomFactor(
+              zoomFactorRef.current + dt * 0.75
+            );
+            zoomFactorRef.current = zNext;
+            onZoomChangeRef.current?.(zNext);
+          }
+
+          // When zoomed out into Whole-World View on Title Screen, Right Stick Y pans altitude up/down!
+          if (
+            (isTitlePreviewRef.current || zoomFactorRef.current <= 0.68) &&
+            Math.abs(gpRightY) > 0.1
+          ) {
+            const nextPan = Math.max(
+              -6,
+              Math.min(45, altitudePanOffsetRef.current - gpRightY * dt * 18)
+            );
+            altitudePanOffsetRef.current = nextPan;
+            onAltitudePanChangeRef.current?.(nextPan);
+          }
+
+          if (wasPressed(8)) {
+            onGamepadActionRef.current?.('toggle_world_zoom');
+          }
+
+          if (activeDialogueNpcRef.current) {
+            if (wasPressed(12)) onGamepadActionRef.current?.('dialogue_up');
+            if (wasPressed(13)) onGamepadActionRef.current?.('dialogue_down');
+            if (wasPressed(0)) onGamepadActionRef.current?.('dialogue_confirm');
+            if (wasPressed(1)) onGamepadActionRef.current?.('dialogue_cancel');
+          } else if (isTitlePreviewRef.current) {
+            if (wasPressed(14)) onGamepadActionRef.current?.('prev_skin');
+            if (wasPressed(15)) onGamepadActionRef.current?.('next_skin');
+            if (wasPressed(0) || wasPressed(9)) {
+              onGamepadActionRef.current?.('start_game');
+            }
+          } else {
+            if (wasPressed(9)) {
+              onGamepadActionRef.current?.('toggle_pause');
+            }
+            if (!isPausedRef.current) {
+              if (wasPressed(3)) {
+                onGamepadActionRef.current?.('cycle_camera');
+              }
+              if (wasPressed(2)) {
+                const p = playerRef.current;
+                const near = findNearbyNpc(p, performance.now() * 0.001);
+                if (near) {
+                  onInteractNpcRef.current(near.npc, near.stepNumber);
+                }
+              }
+
+              // Jump Charge & Launch via A / Cross (button 0) or RT / R2 (button 7)
+              const jumpHeld = Boolean(
+                curButtons[0] || (gp.buttons[7]?.value ?? 0) > 0.35
+              );
+              if (jumpHeld && !prevGpJumpHeld) {
+                beginCharge();
+              } else if (!jumpHeld && prevGpJumpHeld) {
+                releaseJump();
+                triggerGamepadRumble(0.45, 90);
+              }
+              prevGpJumpHeld = jumpHeld;
+            }
+          }
+
+          prevGpButtons = curButtons;
+        }
+      }
+
       if (isPausedRef.current) return;
       elapsedTime += dt;
       const p = playerRef.current;
@@ -3128,19 +3792,64 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
               Math.max(0, Math.min(TOTAL_LEVELS - 1, p.currentStep - 1))
             ];
 
-      let rawInX = 0;
-      let rawInZ = 0;
+      let rawInX = gpMoveX;
+      let rawInZ = gpMoveZ;
       if (keysRef.current.left) rawInX -= 1;
       if (keysRef.current.right) rawInX += 1;
       if (keysRef.current.up) rawInZ -= 1;
       if (keysRef.current.down) rawInZ += 1;
+      rawInX = Math.max(-1, Math.min(1, rawInX));
+      rawInZ = Math.max(-1, Math.min(1, rawInZ));
+
+      // Controller Right Stick 360-degree Jump Direction Aiming
+      if (gpRightMag > 0.05) {
+        const targetStickAngle = computeCameraRelativeWorldAngle(
+          gpRightX,
+          -gpRightY,
+          currentCamPosX - camFocusX,
+          currentCamPosZ - camFocusZ
+        );
+        const diffStick = Math.atan2(
+          Math.sin(targetStickAngle - p.aimAngle),
+          Math.cos(targetStickAngle - p.aimAngle)
+        );
+        p.aimAngle +=
+          diffStick *
+          Math.min(
+            1,
+            dt * 16 * controlSettingsRef.current.controllerAimSensitivity
+          );
+        lastManualAimTime = elapsedTime;
+      }
+
+      // Mouse Cursor Jump Direction Aiming (smoothly tracks mouse cursor when moved)
+      const mouseMovedRecently =
+        controlSettingsRef.current.mouseAimEnabled &&
+        elapsedTime - lastMouseAimTime < 0.35;
+      if (mouseMovedRecently) {
+        const diffMouse = Math.atan2(
+          Math.sin(mouseAimAngle - p.aimAngle),
+          Math.cos(mouseAimAngle - p.aimAngle)
+        );
+        p.aimAngle +=
+          diffMouse *
+          Math.min(
+            1,
+            dt * 20 * controlSettingsRef.current.mouseAimSensitivity
+          );
+      }
 
       let worldMoveX = 0;
       let worldMoveZ = 0;
 
       if (p.isCharging) {
-        if (rawInX !== 0) {
-          p.aimAngle += rawInX * 1.85 * dt;
+        if (rawInX !== 0 && !mouseMovedRecently && gpRightMag <= 0.05) {
+          p.aimAngle +=
+            rawInX *
+            1.85 *
+            controlSettingsRef.current.controllerAimSensitivity *
+            dt;
+          lastManualAimTime = elapsedTime;
         }
         const chargeStep = advanceChargeState(
           p.chargeRatio,
@@ -3157,9 +3866,12 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
           releaseJump();
         }
       } else if (rawInX !== 0 || rawInZ !== 0) {
-        const preset =
-          CAMERA_ANGLE_PRESETS[activeCameraPresetRef.current] ||
-          CAMERA_ANGLE_PRESETS.isometric;
+        const preset = computeSpiralCameraOffset(
+          p.currentStep,
+          p.x,
+          p.z,
+          activeCameraPresetRef.current
+        );
         const fwdLen = Math.hypot(preset.offsetX, preset.offsetZ) || 1;
         const camFwdX = -preset.offsetX / fwdLen;
         const camFwdZ = -preset.offsetZ / fwdLen;
@@ -3172,29 +3884,19 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
         if (mLen > 0.001) {
           worldMoveX /= mLen;
           worldMoveZ /= mLen;
-          if (!p.grounded) {
-            p.aimAngle = Math.atan2(worldMoveZ, worldMoveX);
-          } else {
-            const walkAngle = Math.atan2(worldMoveZ, worldMoveX);
-            const diff = Math.atan2(
-              Math.sin(walkAngle - p.aimAngle),
-              Math.cos(walkAngle - p.aimAngle)
-            );
-            p.aimAngle += diff * Math.min(1, dt * 10);
+          // Update aim from movement unless the user is simultaneously aiming with the mouse or right stick
+          if (!mouseMovedRecently && gpRightMag <= 0.05) {
+            if (!p.grounded) {
+              p.aimAngle = Math.atan2(worldMoveZ, worldMoveX);
+            } else {
+              const walkAngle = Math.atan2(worldMoveZ, worldMoveX);
+              const diff = Math.atan2(
+                Math.sin(walkAngle - p.aimAngle),
+                Math.cos(walkAngle - p.aimAngle)
+              );
+              p.aimAngle += diff * Math.min(1, dt * 10);
+            }
           }
-        }
-      } else if (p.grounded && p.currentStep < TOTAL_LEVELS) {
-        const rtNext = getStepRuntimeOffset(nextStep, elapsedTime + 0.5, 0);
-        const idealAngle = Math.atan2(
-          nextStep.z + rtNext.offsetZ - p.z,
-          nextStep.x + rtNext.offsetX - p.x
-        );
-        const diff = Math.atan2(
-          Math.sin(idealAngle - p.aimAngle),
-          Math.cos(idealAngle - p.aimAngle)
-        );
-        if (Math.abs(diff) < 0.85) {
-          p.aimAngle += diff * Math.min(1, dt * 5.2);
         }
       }
 
@@ -3207,9 +3909,13 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
         worldMoveZ
       );
 
-      if (physResult.activatedRunePlate) {
+      if (physResult.activatedRunePlate || physResult.lockedBoulderInSocket) {
         soundEngine.playChargeTick(0.85);
         spawnBurst(p.x, p.y, p.z, 10);
+      }
+      if (physResult.resetRunesWrongOrder || physResult.resetRunesTimeout) {
+        soundEngine.playLedgeBonk();
+        spawnBurst(p.x, p.y + 0.2, p.z, 12);
       }
       if (physResult.unlockedTrailGate) {
         soundEngine.playStepLand(true);
@@ -3226,22 +3932,125 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
         );
       }
 
+      // Record live airborne jump trajectory for the Ghost / Phantom Climber System!
+      if (!p.grounded) {
+        if (!isRecordingJump) {
+          isRecordingJump = true;
+          jumpStartStep = prevStepBefore;
+          jumpStartElapsed = elapsedTime;
+          jumpPeakY = p.y;
+          lastSampleElapsed = elapsedTime;
+          activeJumpSamples = [
+            {
+              t: 0,
+              x: Number(p.x.toFixed(3)),
+              y: Number(p.y.toFixed(3)),
+              z: Number(p.z.toFixed(3)),
+              vy: Number(p.vy.toFixed(2)),
+              aimAngle: p.aimAngle,
+            },
+          ];
+        } else {
+          jumpPeakY = Math.max(jumpPeakY, p.y);
+          if (elapsedTime - lastSampleElapsed >= 0.055 && activeJumpSamples.length < 90) {
+            lastSampleElapsed = elapsedTime;
+            activeJumpSamples.push({
+              t: Number((elapsedTime - jumpStartElapsed).toFixed(3)),
+              x: Number(p.x.toFixed(3)),
+              y: Number(p.y.toFixed(3)),
+              z: Number(p.z.toFixed(3)),
+              vy: Number(p.vy.toFixed(2)),
+              aimAngle: p.aimAngle,
+            });
+          }
+        }
+      }
+
       if (physResult.landedStep !== null) {
+        // Finalize & save the recorded Ghost Trajectory Run!
+        if (isRecordingJump && activeJumpSamples.length >= 2) {
+          const finalDuration = Math.max(
+            0.25,
+            Number((elapsedTime - jumpStartElapsed).toFixed(3))
+          );
+          activeJumpSamples.push({
+            t: finalDuration,
+            x: Number(p.x.toFixed(3)),
+            y: Number(p.y.toFixed(3)),
+            z: Number(p.z.toFixed(3)),
+            vy: 0,
+            aimAngle: p.aimAngle,
+          });
+          const newGhostRun: GhostTrajectoryRun = {
+            id: `ghost_${Date.now()}_${Math.floor(Math.random() * 999)}`,
+            label: physResult.fellToLowerStep
+              ? `Past Plummet (${jumpStartStep}→${physResult.landedStep})`
+              : `Past Vault (${jumpStartStep}→${physResult.landedStep})`,
+            skin: selectedOutfitIdRef.current,
+            isRival: false,
+            fromStep: jumpStartStep,
+            toStep: physResult.landedStep,
+            peakY: Number(jumpPeakY.toFixed(2)),
+            duration: finalDuration,
+            outcome: physResult.fellToLowerStep ? 'fell' : 'landed',
+            samples: activeJumpSamples,
+          };
+          const updatedRuns = recordPlayerGhostRun(
+            ghostRunsRef.current,
+            newGhostRun
+          );
+          ghostRunsRef.current = updatedRuns;
+          try {
+            localStorage.setItem(
+              'hawk_peak_ghost_runs_v1',
+              JSON.stringify(updatedRuns)
+            );
+          } catch {
+            // Ignore storage errors
+          }
+          onGhostRunsChangeRef.current?.(updatedRuns);
+        }
+        isRecordingJump = false;
+        activeJumpSamples = [];
+
         soundEngine.playStepLand(!physResult.fellToLowerStep);
         spawnBurst(p.x, p.y, p.z, physResult.fellToLowerStep ? 16 : 9);
 
-        if (physResult.fellToLowerStep && physResult.stepsLost >= 2) {
+        // Compute Height-Scaled Screen Shake on any fall from height or lost stages!
+        const dropMeters = physResult.fallDropMeters ?? 0;
+        const shake = computeFallScreenShake(
+          dropMeters,
+          physResult.fellToLowerStep ? physResult.stepsLost : 0
+        );
+        if (shake.triggered) {
+          cameraTrauma = Math.max(cameraTrauma, shake.trauma);
+          triggerGamepadRumble(
+            Math.round(shake.durationSec * 450),
+            Math.min(1, shake.trauma * 0.95)
+          );
+        }
+
+        if (
+          (physResult.fellToLowerStep && physResult.stepsLost >= 1) ||
+          dropMeters >= 1.8
+        ) {
           const taunt = selectPhilosophicalTaunt(
-            physResult.stepsLost,
+            Math.max(1, physResult.stepsLost),
             p.fallsCount
           );
-          soundEngine.playCatastrophicFall(physResult.stepsLost, taunt.quote);
+          soundEngine.playCatastrophicFall(
+            Math.max(1, physResult.stepsLost),
+            taunt.quote
+          );
           onTauntTriggeredRef.current(
             taunt.quote,
             taunt.author,
             physResult.stepsLost,
             prevStepBefore,
-            physResult.landedStep
+            physResult.landedStep,
+            shake.fallDropMeters,
+            shake.trauma,
+            shake.intensityLabel
           );
         } else if (
           physResult.landedStep > prevStepBefore &&
@@ -3416,7 +4225,7 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
       baseCampGroup.visible = p.y < 36 || isTitlePreviewRef.current;
       atmosphereGroup.visible = p.currentStep >= 32 && !isTitlePreviewRef.current;
 
-      // Update Visible Stages around Player (and Starting Mountain Steps during Title Sweep with foreground-pillar culling!)
+      // Update Visible Stages around Player (and Whole-World Mountain Scout when Zoomed Out!)
       const titleSweepProgress = isTitlePreviewRef.current
         ? 0.5 - 0.5 * Math.cos(elapsedTime * 0.28)
         : 0;
@@ -3424,35 +4233,54 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
         ? Math.round(titleSweepProgress * 4)
         : p.currentStep;
 
+      const zoomMetrics = computeWorldZoomMetrics(
+        zoomFactorRef.current,
+        isTitlePreviewRef.current ? 2.36 : 1.75,
+        p.currentStep,
+        isTitlePreviewRef.current,
+        altitudePanOffsetRef.current
+      );
+
       const minVis = Math.max(1, p.currentStep - 12);
       const maxVis = Math.min(
         TOTAL_LEVELS,
-        isTitlePreviewRef.current
-          ? titleFocusStep + 3
-          : p.currentStep + (vistaOverviewRef.current ? 48 : 7)
+        Math.max(
+          zoomMetrics.maxVisibleStep,
+          isTitlePreviewRef.current
+            ? titleFocusStep + 12
+            : p.currentStep + (vistaOverviewRef.current ? 45 : 12)
+        )
       );
 
-      const refX = isTitlePreviewRef.current ? camFocusX : p.x;
-      const refZ = isTitlePreviewRef.current ? camFocusZ : p.z;
+      const camRayDx = currentCamPosX - p.x;
+      const camRayDz = currentCamPosZ - p.z;
+      const camRayLen = Math.hypot(camRayDx, camRayDz) || 1;
+      const camUnitX = camRayDx / camRayLen;
+      const camUnitZ = camRayDz / camRayLen;
 
       for (let i = 0; i < stepEntries.length; i++) {
         const entry = stepEntries[i];
         const sNum = entry.step.stepNumber;
         let isVis = sNum >= minVis && sNum <= maxVis;
+
+        // Keep currentStep..currentStep+4 100% visible at all times (so Stage 4 never vanishes on Stage 0!),
+        // while hiding any distant spiral stage (sNum >= currentStep + 5) that passes directly between the camera and player.
         if (
           isVis &&
           !vistaOverviewRef.current &&
-          sNum > titleFocusStep + 2
+          !zoomMetrics.bypassForegroundCulling &&
+          !isTitlePreviewRef.current &&
+          sNum >= p.currentStep + 5
         ) {
-          const toCamX = currentCamPosX - refX;
-          const toCamZ = currentCamPosZ - refZ;
-          const toStepX = entry.step.x - refX;
-          const toStepZ = entry.step.z - refZ;
-          const dotCam = toCamX * toStepX + toCamZ * toStepZ;
-          if (dotCam > 10.0) {
+          const relX = entry.step.x - p.x;
+          const relZ = entry.step.z - p.z;
+          const projAlongCam = relX * camUnitX + relZ * camUnitZ;
+          const perpToCam = Math.abs(-relX * camUnitZ + relZ * camUnitX);
+          if (projAlongCam > 2.6 && perpToCam < 3.8) {
             isVis = false;
           }
         }
+
         entry.group.visible = isVis;
         if (!isVis) continue;
 
@@ -3483,19 +4311,87 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
           entry.turntableDisc.rotation.y = rt.turntableAngle;
         }
 
+        if (entry.step.requiresBoulderSocket && entry.puzzleBoulderMesh) {
+          const isSocketed = p.boulderSocketUnlockedSteps.includes(sNum);
+          const bx = isSocketed
+            ? entry.step.boulderSocketRelX
+            : p.puzzleBoulderStep === sNum
+            ? p.puzzleBoulderRelX
+            : entry.step.boulderStartRelX;
+          const bz = isSocketed
+            ? entry.step.boulderSocketRelZ
+            : p.puzzleBoulderStep === sNum
+            ? p.puzzleBoulderRelZ
+            : entry.step.boulderStartRelZ;
+          const prevBx = entry.puzzleBoulderMesh.position.x;
+          const prevBz = entry.puzzleBoulderMesh.position.z;
+          entry.puzzleBoulderMesh.position.set(
+            bx,
+            isSocketed ? 0.34 : 0.38,
+            bz
+          );
+          const rollDist = Math.hypot(bx - prevBx, bz - prevBz);
+          if (rollDist > 0.001) {
+            entry.puzzleBoulderMesh.rotation.x += rollDist * 2.8;
+            entry.puzzleBoulderMesh.rotation.z -= rollDist * 2.8;
+          } else if (isSocketed) {
+            entry.puzzleBoulderMesh.rotation.y += dt * 1.6;
+          }
+          if (entry.boulderSocketRingMat) {
+            entry.boulderSocketRingMat.color.setHex(
+              isSocketed ? 0x10b981 : 0xfacc15
+            );
+            entry.boulderSocketRingMat.emissive.setHex(
+              isSocketed ? 0x059669 : 0xd97706
+            );
+          }
+        }
+
         if (entry.step.requiresSwitch) {
           const gateUnlocked = isStepGateUnlocked(entry.step, p);
+
           for (const rv of entry.runeVisuals) {
             const isLit =
               gateUnlocked || p.activatedRuneIds.includes(rv.id);
-            rv.ringMat.color.setHex(isLit ? 0x10b981 : 0xf59e0b);
-            rv.ringMat.emissive.setHex(isLit ? 0x059669 : 0xd97706);
-            rv.crystalMat.color.setHex(isLit ? 0x6ee7b7 : 0xfef08a);
-            rv.crystalMat.emissive.setHex(isLit ? 0x10b981 : 0xf59e0b);
-            rv.crystalMesh.position.y = isLit
-              ? 0.14
-              : rv.baseY + Math.sin(elapsedTime * 3.5) * 0.06;
-            rv.crystalMesh.rotation.y += dt * (isLit ? 4.0 : 1.8);
+            if (isLit) {
+              rv.ringMat.color.setHex(0x10b981);
+              rv.ringMat.emissive.setHex(0x059669);
+              rv.crystalMat.color.setHex(0x6ee7b7);
+              rv.crystalMat.emissive.setHex(0x10b981);
+              rv.crystalMesh.position.y = 0.14;
+              rv.crystalMesh.rotation.y += dt * 4.0;
+            } else if (entry.step.puzzleType === 'ordered_runes') {
+              // Harmonic runes: no bright cyan giveaway; each rune oscillates at a harmonic rate
+              // proportional to its order index so observant players can deduce or test the sequence
+              const harmonicFreq = 2.2 + rv.index * 1.6;
+              rv.ringMat.color.setHex(0x7c3aed);
+              rv.ringMat.emissive.setHex(0x5b21b6);
+              rv.crystalMat.color.setHex(0xc4b5fd);
+              rv.crystalMat.emissive.setHex(0x7c3aed);
+              rv.crystalMesh.position.y =
+                rv.baseY + Math.sin(elapsedTime * harmonicFreq) * 0.065;
+              rv.crystalMesh.rotation.y += dt * (1.2 + rv.index * 0.9);
+            } else if (
+              entry.step.puzzleType === 'timed_runes' &&
+              p.runePuzzleTimer > 0 &&
+              sNum === p.currentStep
+            ) {
+              rv.ringMat.color.setHex(0xf97316);
+              rv.ringMat.emissive.setHex(0xea580c);
+              rv.crystalMat.color.setHex(0xfef08a);
+              rv.crystalMat.emissive.setHex(0xf97316);
+              rv.crystalMesh.position.y =
+                rv.baseY + Math.sin(elapsedTime * 9.0) * 0.08;
+              rv.crystalMesh.rotation.y += dt * 5.0;
+            } else {
+              rv.ringMat.color.setHex(0xf59e0b);
+              rv.ringMat.emissive.setHex(0xd97706);
+              rv.crystalMat.color.setHex(0xfef08a);
+              rv.crystalMat.emissive.setHex(0xf59e0b);
+              rv.crystalMesh.position.y =
+                rv.baseY + Math.sin(elapsedTime * 3.5) * 0.06;
+              rv.crystalMesh.rotation.y += dt * 1.8;
+            }
           }
 
           if (entry.gateEnergyMesh && entry.gateEnergyMat) {
@@ -3612,69 +4508,44 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
       const nextStep = LEVELS_500[nextStepIdx] || LEVELS_500[0];
 
       if (showGameplayReticle) {
-        const alignNow = computeAimAlignment(
-          p.x,
-          p.y,
-          p.z,
-          p.aimAngle,
-          nextStep,
-          elapsedTime
-        );
-        const previewCharge = p.isCharging
-          ? p.chargeRatio
-          : alignNow.idealChargePercent / 100;
-
-        const pred = computePredictedLandingSpot(
-          p.x,
-          p.y,
-          p.z,
-          previewCharge,
-          p.aimAngle,
-          nextStep,
-          elapsedTime
-        );
+        // Zero hand-holding: never show a landing target reticle on the next stage or a full-arc preview!
+        // Only show the player's foot-level facing arrow, and while actively charging, show 4 short
+        // takeoff impulse dots near the boots colored purely by raw leg tension (amber -> orange -> crimson).
+        landingReticle.visible = false;
 
         if (p.isCharging) {
           chargeRingMat.opacity = 0.92;
           const scale = 0.85 + p.chargeRatio * 0.68;
           chargeRingMesh.scale.set(scale, scale, 1);
 
-          const ringColor = pred.isOnTarget
-            ? 0x10b981
-            : p.chargeRatio > 0.85
-            ? 0xf43f5e
-            : 0x38bdf8;
-          chargeRingMat.color.setHex(ringColor);
-          landingReticleMat.color.setHex(ringColor);
-          landingReticleMat.opacity = 0.92;
-          arcDotMat.color.setHex(ringColor);
-          arcDotMat.opacity = 0.92;
+          const tensionColor =
+            p.chargeRatio > 0.82
+              ? 0xf43f5e
+              : p.chargeRatio > 0.48
+              ? 0xf97316
+              : 0xfacc15;
+          chargeRingMat.color.setHex(tensionColor);
+          arcDotMat.color.setHex(tensionColor);
+          arcDotMat.opacity = 0.88;
+
+          const vel = computeJumpVelocity(p.chargeRatio, p.aimAngle);
+          for (let i = 0; i < arcDotMeshes.length; i++) {
+            if (i < 4) {
+              const t = (i + 1) * 0.038;
+              const dx = p.x + vel.vx * t;
+              const dy = p.y + 0.25 + vel.vy * t - 0.5 * 22.0 * t * t;
+              const dz = p.z + vel.vz * t;
+              arcDotMeshes[i].position.set(dx, dy, dz);
+              arcDotMeshes[i].visible = true;
+            } else {
+              arcDotMeshes[i].visible = false;
+            }
+          }
         } else {
-          // Subtle always-on directional guide toward Next Stage even before pressing Space!
           chargeRingMat.opacity = 0.0;
-          landingReticleMat.color.setHex(
-            alignNow.isAimAligned ? 0xfacc15 : 0x38bdf8
-          );
-          landingReticleMat.opacity = 0.48;
-          arcDotMat.color.setHex(alignNow.isAimAligned ? 0xfef08a : 0x7dd3fc);
-          arcDotMat.opacity = 0.42;
-        }
-
-        landingReticle.visible = true;
-        landingReticle.position.set(pred.x, pred.y + 0.04, pred.z);
-        const pulseScale = pred.isOnTarget
-          ? 1.0 + Math.sin(elapsedTime * 8) * 0.12
-          : 0.92;
-        landingReticle.scale.set(pulseScale, pulseScale, 1);
-
-        const vel = computeJumpVelocity(previewCharge, p.aimAngle);
-        for (let i = 0; i < arcDotMeshes.length; i++) {
-          const t = ((i + 1) / (arcDotMeshes.length + 1)) * pred.flightTime;
-          const dx = p.x + vel.vx * t;
-          const dy = p.y + 0.25 + vel.vy * t - 0.5 * 22.0 * t * t;
-          const dz = p.z + vel.vz * t;
-          arcDotMeshes[i].position.set(dx, dy, dz);
-          arcDotMeshes[i].visible = true;
+          for (let i = 0; i < arcDotMeshes.length; i++) {
+            arcDotMeshes[i].visible = false;
+          }
         }
       } else {
         chargeRingMat.opacity = 0;
@@ -3701,15 +4572,70 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
         (pt.mesh.material as THREE.MeshBasicMaterial).opacity = alpha * 0.8;
       }
 
+      // Update 3D Holographic Ghost / Phantom Climbers & Trajectory Ribbons!
+      const showGhosts =
+        ghostsEnabledRef.current &&
+        !isTitlePreviewRef.current &&
+        !activeDialogueNpcRef.current;
+      const allRuns = ghostRunsRef.current;
+      const nearbyRuns = showGhosts
+        ? allRuns
+            .filter(
+              (r) =>
+                Math.abs(r.fromStep - p.currentStep) <= 12 ||
+                Math.abs(r.toStep - p.currentStep) <= 12
+            )
+            .slice(0, phantomRigs.length)
+        : [];
+
+      for (let gIdx = 0; gIdx < phantomRigs.length; gIdx++) {
+        const rig = phantomRigs[gIdx];
+        const run = nearbyRuns[gIdx];
+        if (!run || !showGhosts) {
+          rig.group.visible = false;
+          for (const dot of rig.trailDots) dot.visible = false;
+          continue;
+        }
+
+        const pose = sampleGhostPoseAtTime(run, elapsedTime, gIdx * 0.65);
+        rig.group.visible = pose.opacity > 0.05;
+        rig.group.position.set(pose.x, pose.y, pose.z);
+        rig.visual.rotation.y = -pose.aimAngle;
+        rig.visual.rotation.z = pose.isPlummeting ? elapsedTime * 7.5 : 0;
+        rig.cloakMat.opacity = pose.opacity * 0.72;
+        rig.ringMat.opacity = pose.opacity * 0.65;
+
+        const samples = run.samples;
+        for (let d = 0; d < rig.trailDots.length; d++) {
+          const dot = rig.trailDots[d];
+          if (samples.length < 2) {
+            dot.visible = false;
+            continue;
+          }
+          const sIdx = Math.min(
+            samples.length - 1,
+            Math.floor(((d + 1) / (rig.trailDots.length + 1)) * samples.length)
+          );
+          const sp = samples[sIdx];
+          dot.position.set(sp.x, sp.y + 0.25, sp.z);
+          dot.visible = true;
+        }
+      }
+
+      // Decay Fall Camera Trauma & Compute Screen Shake Offset
+      if (cameraTrauma > 0) {
+        cameraTrauma = Math.max(0, cameraTrauma - dt * 0.85);
+      }
+      const shakeSample = sampleScreenShakeOffset(cameraTrauma, elapsedTime);
+
       // ============================================================================
-      // CAMERA RIG: Dynamic Title Screen Spline Tour / NPC POV / Auto-Shifting Gameplay
+      // CAMERA RIG: Dynamic Title Screen Spline Tour / NPC POV / Orbiting Spiral Gameplay
       // ============================================================================
       dampedPointerX += (pointerNormX - dampedPointerX) * Math.min(1, dt * 4.5);
       dampedPointerY += (pointerNormY - dampedPointerY) * Math.min(1, dt * 4.5);
 
       if (isTitlePreviewRef.current) {
-        // Cinematic Camera Sweep Across the Starting Mountain Steps (Base Camp -> Bridge -> Stages 1..4)
-        // Smooth cosine-eased ascent and descent showcasing the scale & isolation of Hawk Peak
+        // Cinematic Camera Sweep Across the Starting Mountain Steps + Interactive Whole-World Zoom Out!
         const sweepWaypoints = [
           { x: GROUND_SPAWN_X + 0.2, y: GROUND_FLOOR_Y + 0.85, z: GROUND_SPAWN_Z - 1.1 },
           { x: LEVELS_500[0].x * 0.75, y: LEVELS_500[0].y + 0.45, z: LEVELS_500[0].z * 0.85 },
@@ -3726,13 +4652,35 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
 
         const wpA = sweepWaypoints[idxA];
         const wpB = sweepWaypoints[idxB];
-        const targetSweepX = wpA.x + (wpB.x - wpA.x) * segEase + dampedPointerX * 0.85;
-        const targetSweepY = wpA.y + (wpB.y - wpA.y) * segEase - dampedPointerY * 0.35;
-        const targetSweepZ = wpA.z + (wpB.z - wpA.z) * segEase;
+        const worldZoomPullback = Math.max(0, 1 - zoomMetrics.clampedFactor);
+        const targetSweepY =
+          wpA.y +
+          (wpB.y - wpA.y) * segEase +
+          zoomMetrics.verticalLookOffset -
+          dampedPointerY * (0.35 + worldZoomPullback * 1.8);
+        const approxStageIdx = Math.max(
+          0,
+          Math.min(TOTAL_LEVELS - 1, Math.round(targetSweepY / 0.88))
+        );
+        const spireStage = LEVELS_500[approxStageIdx] || LEVELS_500[0];
 
-        camFocusX += (targetSweepX - camFocusX) * Math.min(1, dt * 4.2);
-        camFocusY += (targetSweepY - camFocusY) * Math.min(1, dt * 4.2);
-        camFocusZ += (targetSweepZ - camFocusZ) * Math.min(1, dt * 4.2);
+        const baseSweepX = wpA.x + (wpB.x - wpA.x) * segEase;
+        const baseSweepZ = wpA.z + (wpB.z - wpA.z) * segEase;
+        const targetSweepX =
+          baseSweepX * (1 - worldZoomPullback * 0.7) +
+          spireStage.x * 0.55 * (worldZoomPullback * 0.7) +
+          dampedPointerX * (0.85 + worldZoomPullback * 3.0);
+        const targetSweepZ =
+          baseSweepZ * (1 - worldZoomPullback * 0.7) +
+          spireStage.z * 0.55 * (worldZoomPullback * 0.7);
+
+        const focusLerp =
+          Math.abs(targetSweepY - camFocusY) > 4.0
+            ? Math.min(1, dt * 14.0)
+            : Math.min(1, dt * 5.5);
+        camFocusX += (targetSweepX - camFocusX) * focusLerp;
+        camFocusY += (targetSweepY - camFocusY) * focusLerp;
+        camFocusZ += (targetSweepZ - camFocusZ) * focusLerp;
 
         const tourPhase = elapsedTime * 0.34;
         const orbitX = Math.sin(tourPhase) * 1.65 + dampedPointerX * 1.15;
@@ -3746,9 +4694,20 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
         camera.position.set(currentCamPosX, currentCamPosY, currentCamPosZ);
         camera.lookAt(camFocusX, camFocusY, camFocusZ);
 
-        // Zoom out gently as the camera sweeps up the starting mountain steps to reveal peak scale & isolation
-        const targetSweepZoom = 2.36 - sweepProgress * 0.52;
-        camera.zoom += (targetSweepZoom - camera.zoom) * Math.min(1, dt * 4.2);
+        const baseSweepZoom = 2.36 - sweepProgress * 0.52;
+        const wholeWorldScale =
+          zoomMetrics.clampedFactor < 1.0
+            ? Math.pow(zoomMetrics.clampedFactor, 1.28)
+            : zoomMetrics.clampedFactor;
+        const targetSweepZoom = Math.max(
+          0.26,
+          Math.min(4.2, baseSweepZoom * wholeWorldScale)
+        );
+        const zoomLerp =
+          Math.abs(targetSweepZoom - camera.zoom) > 0.25
+            ? Math.min(1, dt * 15.0)
+            : Math.min(1, dt * 7.0);
+        camera.zoom += (targetSweepZoom - camera.zoom) * zoomLerp;
         camera.updateProjectionMatrix();
       } else if (activeDialogueNpcRef.current) {
         const near = findNearbyNpc(p, elapsedTime);
@@ -3768,7 +4727,6 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
             : LEVELS_500[Math.max(0, p.currentStep - 1)].y);
 
         if (npcPhys) {
-          // Turn the player to face the NPC for the Witcher-3 over-the-shoulder two-shot
           const faceNpcAngle = Math.atan2(
             npcPhys.worldZ - p.z,
             npcPhys.worldX - p.x
@@ -3796,26 +4754,33 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
         }
       } else {
         const dyn = computeStepTransitionDynamics(p, nextStep, 0, 0);
-        const preset =
-          CAMERA_ANGLE_PRESETS[activeCameraPresetRef.current] ||
-          CAMERA_ANGLE_PRESETS.isometric;
-        const vistaScale = vistaOverviewRef.current ? 1.85 : 1.0;
+        const preset = computeSpiralCameraOffset(
+          p.currentStep,
+          dyn.targetCamX,
+          dyn.targetCamZ,
+          activeCameraPresetRef.current
+        );
+        const vistaScale = vistaOverviewRef.current ? 1.35 : 1.0;
+
+        const targetFocusY = dyn.targetCamY + zoomMetrics.verticalLookOffset;
 
         if (
-          Math.hypot(dyn.targetCamY - camFocusY, dyn.targetCamX - camFocusX) >
-          22
+          Math.hypot(targetFocusY - camFocusY, dyn.targetCamX - camFocusX) > 22
         ) {
           camFocusX = dyn.targetCamX;
-          camFocusY = dyn.targetCamY;
+          camFocusY = targetFocusY;
           camFocusZ = dyn.targetCamZ;
           currentCamPosX = camFocusX + preset.offsetX * vistaScale;
           currentCamPosY = camFocusY + preset.offsetY * vistaScale;
           currentCamPosZ = camFocusZ + preset.offsetZ * vistaScale;
         } else {
+          const yRate =
+            Math.abs(targetFocusY - camFocusY) > 4.0
+              ? Math.min(1, dt * 14.0)
+              : Math.min(1, dt * dyn.lerpRateY);
           camFocusX +=
             (dyn.targetCamX - camFocusX) * Math.min(1, dt * dyn.lerpRateXZ);
-          camFocusY +=
-            (dyn.targetCamY - camFocusY) * Math.min(1, dt * dyn.lerpRateY);
+          camFocusY += (targetFocusY - camFocusY) * yRate;
           camFocusZ +=
             (dyn.targetCamZ - camFocusZ) * Math.min(1, dt * dyn.lerpRateXZ);
 
@@ -3824,22 +4789,44 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
           const desiredPosZ = camFocusZ + preset.offsetZ * vistaScale;
 
           currentCamPosX +=
-            (desiredPosX - currentCamPosX) * Math.min(1, dt * 5.2);
+            (desiredPosX - currentCamPosX) * Math.min(1, dt * 8.0);
           currentCamPosY +=
-            (desiredPosY - currentCamPosY) * Math.min(1, dt * 5.2);
+            (desiredPosY - currentCamPosY) * Math.min(1, dt * 8.0);
           currentCamPosZ +=
-            (desiredPosZ - currentCamPosZ) * Math.min(1, dt * 5.2);
+            (desiredPosZ - currentCamPosZ) * Math.min(1, dt * 8.0);
         }
 
-        camera.position.set(currentCamPosX, currentCamPosY, currentCamPosZ);
-        camera.lookAt(camFocusX, camFocusY, camFocusZ);
+        // Apply Height-Scaled Fall Screen-Shake Offset to 3D Camera Position, Focus & Roll!
+        camera.position.set(
+          currentCamPosX + shakeSample.offsetX,
+          currentCamPosY + shakeSample.offsetY,
+          currentCamPosZ + shakeSample.offsetZ
+        );
+        camera.lookAt(
+          camFocusX + shakeSample.offsetX * 0.75,
+          camFocusY + shakeSample.offsetY * 0.85,
+          camFocusZ + shakeSample.offsetZ * 0.75
+        );
+        camera.rotation.z += shakeSample.rollRad;
 
-        // Subtle cinematic dolly-in while charging a jump!
+        // Subtle cinematic dolly-in while charging a jump + user Zoom Factor!
         const chargeZoomBoost = p.isCharging ? p.chargeRatio * 0.08 : 0;
-        const targetZoom = vistaOverviewRef.current
+        const baseGameplayZoom = vistaOverviewRef.current
           ? 0.56
           : preset.zoomMultiplier + chargeZoomBoost;
-        camera.zoom += (targetZoom - camera.zoom) * Math.min(1, dt * 5.5);
+        const wholeWorldScale =
+          zoomMetrics.clampedFactor < 1.0
+            ? Math.pow(zoomMetrics.clampedFactor, 1.25)
+            : zoomMetrics.clampedFactor;
+        const targetZoom = Math.max(
+          0.26,
+          Math.min(4.2, baseGameplayZoom * wholeWorldScale)
+        );
+        const zoomLerp =
+          Math.abs(targetZoom - camera.zoom) > 0.25
+            ? Math.min(1, dt * 15.0)
+            : Math.min(1, dt * 7.0);
+        camera.zoom += (targetZoom - camera.zoom) * zoomLerp;
         camera.updateProjectionMatrix();
       }
 
@@ -3849,7 +4836,7 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
         .copy(camera.position)
         .addScaledVector(_camDir, 185);
       skyBackdropMesh.quaternion.copy(camera.quaternion);
-      skyBackdropMesh.scale.setScalar(1 / Math.max(0.45, camera.zoom));
+      skyBackdropMesh.scale.setScalar(1 / Math.max(0.22, camera.zoom));
 
       // Update Directional Sun Shadow Target & MatrixWorld so Shadows Track Camera Sweep or Player!
       const shadowAnchorX = isTitlePreviewRef.current ? camFocusX : p.x;
@@ -3913,6 +4900,16 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
         const activeRuneCount = curStepObj.runePlates.filter((rp) =>
           p.activatedRuneIds.includes(rp.id)
         ).length;
+        let nextOrderedRuneIndex = 1;
+        for (const rp of curStepObj.runePlates) {
+          if (!p.activatedRuneIds.includes(rp.id)) {
+            nextOrderedRuneIndex = rp.index + 1;
+            break;
+          }
+        }
+        const boulderSocketLocked = p.boulderSocketUnlockedSteps.includes(
+          curStepObj.stepNumber
+        );
         const stepGateUnlocked = isStepGateUnlocked(curStepObj, p);
         const nextCameraShiftStep =
           (Math.floor(p.currentStep / CAMERA_SHIFT_INTERVAL_STEPS) + 1) *
@@ -3937,6 +4934,11 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
           stepTitle: curStepObj.title,
           stepTrapText: curStepObj.psychologicalTrap,
           stepDifficulty: curStepObj.difficultyRating,
+          puzzleType: curStepObj.puzzleType,
+          runeTimeRemaining: Number(p.runePuzzleTimer.toFixed(1)),
+          requiresBoulderSocket: curStepObj.requiresBoulderSocket,
+          boulderSocketLocked,
+          nextOrderedRuneIndex,
           hazardType: curStepObj.hazard,
           surfaceTheme: curStepObj.surfaceTheme,
           crumbleWarning:
