@@ -55,6 +55,14 @@ export type StagePuzzleType =
   | 'boulder_socket'
   | 'crusher_gauntlet';
 
+export type StageProgressionPhase =
+  | 'early_hook'
+  | 'rising_trial'
+  | 'rest_beat'
+  | 'crucible_spike'
+  | 'boss_citadel'
+  | 'milestone_sanctuary';
+
 export type TrailGauntletType =
   | 'ranger_outpost'
   | 'plank_bridge'
@@ -167,6 +175,7 @@ export interface LevelStep {
   stageArchetype: StageArchetype;
   surfaceTheme: StepSurfaceTheme;
   gauntletType: TrailGauntletType;
+  progressionPhase: StageProgressionPhase;
   difficultyRating: number; // 1 to 10
   title: string;
   psychologicalTrap: string;
@@ -803,6 +812,7 @@ export const GROUND_STEP_META: LevelStep = {
   atmosphericLayer: 'troposphere_valley',
   stageArchetype: 'outpost_plaza',
   gauntletType: 'ranger_outpost',
+  progressionPhase: 'early_hook',
   difficultyRating: 1,
   title: 'Hawk Peak Base Camp & River Valley',
   x: GROUND_SPAWN_X,
@@ -874,9 +884,7 @@ function directionalHalfExtent(
 ): number {
   const halfW = width * 0.5;
   const halfD = depth * 0.5;
-  const tx = Math.abs(dx) > 0.001 ? halfW / Math.abs(dx) : Infinity;
-  const tz = Math.abs(dz) > 0.001 ? halfD / Math.abs(dz) : Infinity;
-  return Math.min(tx, tz);
+  return Math.hypot(halfW * dx, halfD * dz) * 0.86;
 }
 
 export function generate500Levels(seed = DEFAULT_SPIRE_SEED): LevelStep[] {
@@ -890,19 +898,19 @@ export function generate500Levels(seed = DEFAULT_SPIRE_SEED): LevelStep[] {
   let curZ = -6.25;
   let headingRad = -0.45;
 
-  // Hand-tuned showcase of random difficulty contrast in the opening stages so the player
-  // immediately experiences genuine Sisyphean challenge and per-stage random difficulty (1/10 to 10/10):
+  // Hand-tuned GDD Progression Showcase for the opening 10 stages:
+  // 1) Early Wins (Stages 1-2) -> 2) Rising Challenge (Stages 3-4) -> 3) Rest Beat (Stage 5) -> 4) Crucible Spikes & Boss Citadel (Stages 6-10)
   const openingDifficultyShowcase: Record<number, number> = {
-    1: 5,  // Stage 1: Trailhead Dual-Rune & Rolling Stone Gate (Diff 5/10)
-    2: 8,  // Stage 2: Sisyphus Boulder-Push Socket Puzzle + Sweeper Beam (Diff 8/10)
-    3: 9,  // Stage 3: Sequential 3-Rune Lock + High-Speed Rolling Stone (Diff 9/10)
-    4: 7,  // Stage 4: Timed Countdown Rune Relay + Crosswind (Diff 7/10)
-    5: 9,  // Stage 5: Knife-Edge Sisyphus Boulder-Push + Sweeper Beam (Diff 9/10)
-    6: 10, // Stage 6: Extreme 10/10 Sequential 3-Rune Tartarus Gauntlet (Diff 10/10)
-    7: 3,  // Stage 7: High-Crag Wind Ledge (Diff 3/10)
-    8: 8,  // Stage 8: Timed 3-Rune Relay + Rotating Mill Beam (Diff 8/10)
-    9: 1,  // Stage 9: Narrow Crag Outcrop (Diff 1/10)
-    10: 6, // Stage 10: Sisyphus Boulder Altar + Rolling Stone (Diff 6/10)
+    1: 2,  // Stage 1 [EARLY HOOK]: Trailhead Rune & Rolling Stone Gate (Diff 2/10)
+    2: 5,  // Stage 2 [EARLY HOOK]: Sisyphus Boulder-Push Socket + Sweeper Beam (Diff 5/10)
+    3: 7,  // Stage 3 [RISING TRIAL]: Sequential 2-Rune Lock + Rolling Stone + Blocker Goat (Diff 7/10)
+    4: 6,  // Stage 4 [RISING TRIAL]: Timed Countdown Rune Relay + Crosswind (Diff 6/10)
+    5: 3,  // Stage 5 [REST BEAT]: Scenic Breather Ledge + Sisyphus Socket (Diff 3/10)
+    6: 9,  // Stage 6 [CRUCIBLE SPIKE]: 9/10 Sequential 3-Rune Tartarus Gauntlet (Diff 9/10)
+    7: 2,  // Stage 7 [REST BEAT]: High-Crag Wind Breather Ledge (Diff 2/10)
+    8: 8,  // Stage 8 [CRUCIBLE SPIKE]: Timed 3-Rune Relay + Rotating Mill Beam (Diff 8/10)
+    9: 1,  // Stage 9 [REST BEAT]: Calm Crag Outcrop (Diff 1/10)
+    10: 10, // Stage 10 [BOSS CITADEL]: 10/10 Sisyphus Boulder Altar + Relentless Rolling Stone (Diff 10/10)
   };
 
   for (let i = 1; i <= TOTAL_LEVELS; i++) {
@@ -914,19 +922,23 @@ export function generate500Levels(seed = DEFAULT_SPIRE_SEED): LevelStep[] {
       i % 50 === 0 || i === TOTAL_LEVELS;
 
     // ============================================================================
-    // TRUE PER-STAGE RANDOM DIFFICULTY RATING (1/10 to 10/10 on EVERY stage, biased harder!)
+    // TRUE PER-STAGE RANDOM DIFFICULTY RATING WITH GDD PACING BEATS (1/10 to 10/10)
     // ============================================================================
     let difficultyRating: number;
     if (isMilestone) {
       difficultyRating = 2; // Every 50th Milestone Sanctuary is a calm checkpoint
     } else if (openingDifficultyShowcase[i] !== undefined) {
       difficultyRating = openingDifficultyShowcase[i];
+    } else if (i % 10 === 0) {
+      // Every 10th stage is a Boss Citadel spike (9/10 or 10/10)
+      difficultyRating = rng() < 0.55 ? 10 : 9;
+    } else if (i % 7 === 0) {
+      // Every 7th stage is a Rest Beat between intensity (1/10 to 3/10)
+      difficultyRating = Math.floor(rng() * 3) + 1;
     } else {
       const r1 = Math.floor(rng() * 10) + 1;
       const r2 = Math.floor(rng() * 10) + 1;
-      // Bias 70% of stages toward the higher of two rolls so the ascent is relentlessly punishing,
-      // while still rolling all 10 ratings (1..10) across the mountain!
-      let rolled = rng() < 0.7 ? Math.max(r1, r2) : r1;
+      let rolled = rng() < 0.58 ? Math.max(r1, r2) : r1;
       const prevDiff = steps[i - 2]?.difficultyRating ?? 5;
       if (Math.abs(rolled - prevDiff) <= 1) {
         rolled = ((rolled + 4) % 10) + 1;
@@ -934,65 +946,77 @@ export function generate500Levels(seed = DEFAULT_SPIRE_SEED): LevelStep[] {
       difficultyRating = Math.max(1, Math.min(10, rolled));
     }
 
+    const progressionPhase: StageProgressionPhase = isMilestone
+      ? 'milestone_sanctuary'
+      : i <= 2
+      ? 'early_hook'
+      : i % 10 === 0 || difficultyRating === 10
+      ? 'boss_citadel'
+      : difficultyRating <= 3
+      ? 'rest_beat'
+      : difficultyRating >= 8
+      ? 'crucible_spike'
+      : 'rising_trial';
+
     // ============================================================================
-    // STAGE ARCHETYPE & TIGHTER DIMENSIONS DRIVEN BY RANDOM DIFFICULTY RATING
+    // STAGE ARCHETYPE & DIMENSIONS DRIVEN BY RANDOM DIFFICULTY RATING
     // ============================================================================
     let stageArchetype: StageArchetype = 'switchback_terrace';
-    let width = 3.5;
-    let depth = 3.5;
+    let width = 3.8;
+    let depth = 3.8;
 
     if (i === 1) {
       stageArchetype = 'outpost_plaza';
-      width = 3.95;
-      depth = 3.65;
+      width = 4.55;
+      depth = 4.25;
     } else if (i === TOTAL_LEVELS) {
       stageArchetype = 'grand_sanctuary';
       width = 6.0;
       depth = 6.0;
     } else if (isMilestone) {
       stageArchetype = 'grand_sanctuary';
-      width = 4.9 + rng() * 0.5;
-      depth = 4.7 + rng() * 0.5;
+      width = 5.1 + rng() * 0.5;
+      depth = 4.9 + rng() * 0.5;
     } else if (difficultyRating >= 8) {
       const highRoll = (i + Math.floor(rng() * 3)) % 3;
       if (highRoll === 0 && i > 6) {
         stageArchetype = 'pin_needle';
-        width = 2.65 + rng() * 0.32;
-        depth = 2.65 + rng() * 0.32;
+        width = 2.95 + rng() * 0.35;
+        depth = 2.95 + rng() * 0.35;
       } else if (highRoll === 1) {
         stageArchetype = 'knife_ridge';
-        width = 4.05 + rng() * 0.65;
-        depth = 2.52 + rng() * 0.28;
+        width = 4.35 + rng() * 0.65;
+        depth = 2.85 + rng() * 0.32;
       } else {
         stageArchetype = 'grand_sanctuary';
-        width = 4.45 + rng() * 0.65;
-        depth = 4.25 + rng() * 0.65;
+        width = 4.75 + rng() * 0.65;
+        depth = 4.55 + rng() * 0.65;
       }
     } else if (difficultyRating >= 4) {
       const midRoll = (i + Math.floor(rng() * 3)) % 3;
       if (midRoll === 0) {
         stageArchetype = 'canyon_span';
-        width = 3.12 + rng() * 0.38;
-        depth = 4.35 + rng() * 0.65;
+        width = 3.45 + rng() * 0.42;
+        depth = 4.65 + rng() * 0.65;
       } else if (midRoll === 1) {
         stageArchetype = 'switchback_terrace';
-        width = 3.52 + rng() * 0.58;
-        depth = 3.32 + rng() * 0.58;
+        width = 3.85 + rng() * 0.58;
+        depth = 3.65 + rng() * 0.58;
       } else {
         stageArchetype = 'knife_ridge';
-        width = 3.85 + rng() * 0.55;
-        depth = 2.68 + rng() * 0.32;
+        width = 4.15 + rng() * 0.55;
+        depth = 2.95 + rng() * 0.35;
       }
     } else {
       stageArchetype = rng() < 0.55 ? 'outpost_plaza' : 'switchback_terrace';
-      width = 3.95 + rng() * 0.65;
-      depth = 3.82 + rng() * 0.65;
+      width = 4.25 + rng() * 0.65;
+      depth = 4.1 + rng() * 0.65;
     }
 
     let turnAngleDeg = 0;
-    let horizGap = i === 1 ? 4.5 : 0;
-    let clearGap = i === 1 ? 1.24 : 0;
-    let vertRise = i === 1 ? 0.85 : 0;
+    let horizGap = i === 1 ? 4.4 : 0;
+    let clearGap = i === 1 ? 1.05 : 0;
+    let vertRise = i === 1 ? 0.8 : 0;
     let dx = Number(Math.cos(headingRad).toFixed(4));
     let dz = Number(Math.sin(headingRad).toFixed(4));
 
@@ -1006,8 +1030,8 @@ export function generate500Levels(seed = DEFAULT_SPIRE_SEED): LevelStep[] {
       // and out across jagged rock spurs so no two jumps follow a straight line!
       // ============================================================================
       const diffScale = (difficultyRating - 1) / 9;
-      clearGap = Number((1.16 + diffScale * 0.44 + rng() * 0.14).toFixed(2));
-      vertRise = Number((0.8 + diffScale * 0.3 + rng() * 0.12).toFixed(2));
+      clearGap = Number((0.84 + diffScale * 0.34 + rng() * 0.1).toFixed(2));
+      vertRise = Number((0.68 + diffScale * 0.22 + rng() * 0.08).toFixed(2));
 
       const prevRadialAngle = Math.atan2(
         curZ - MOUNTAIN_CORE_Z,
@@ -1017,18 +1041,18 @@ export function generate500Levels(seed = DEFAULT_SPIRE_SEED): LevelStep[] {
       const dTheta = -(0.27 + (i % 3) * 0.05 + rng() * 0.08);
       const nextRadialAngle = prevRadialAngle + dTheta;
 
-      // Radial crag variation: weave between 11.2m (inner cliff alcove) and 16.4m (outer rock spur)
+      // Radial crag variation: weave between 11.4m (inner cliff alcove) and 16.0m (outer rock spur)
       // creating sharp non-linear inward and outward dogleg cuts while spiraling up the mountain!
       const zigBeat = i % 4;
       const radialBase =
         zigBeat === 0
-          ? 11.4
+          ? 11.5
           : zigBeat === 1
-          ? 15.6
+          ? 15.4
           : zigBeat === 2
           ? 12.6
-          : 16.2;
-      const targetRadius = radialBase + (rng() - 0.5) * 1.4;
+          : 15.8;
+      const targetRadius = radialBase + (rng() - 0.5) * 1.3;
 
       const idealTargetX =
         MOUNTAIN_CORE_X + Math.cos(nextRadialAngle) * targetRadius;
@@ -1088,10 +1112,10 @@ export function generate500Levels(seed = DEFAULT_SPIRE_SEED): LevelStep[] {
     const conveyorDirX = perpX;
     const conveyorDirZ = perpZ;
 
-    // Charge speed scales aggressively with the stage's random difficulty rating!
+    // Charge speed scales smoothly with the stage's random difficulty rating
     const chargeSpeedMultiplier = isMilestone
       ? 1.0
-      : Number((1.05 + (difficultyRating / 10) * 0.48 + rng() * 0.08).toFixed(2));
+      : Number((1.0 + (difficultyRating / 10) * 0.28 + rng() * 0.05).toFixed(2));
 
     const hasBridgeToNext = false;
 
@@ -1130,53 +1154,57 @@ export function generate500Levels(seed = DEFAULT_SPIRE_SEED): LevelStep[] {
     const requiresBoulderSocket =
       puzzleType === 'boulder_socket' && i < TOTAL_LEVELS;
 
-    // Tighter countdown timer for timed_runes (3.8s to 6.6s)
+    // Fair countdown timer for timed_runes (6.2s to 9.0s)
     const runeTimeLimitSec =
       puzzleType === 'timed_runes'
-        ? Number(Math.max(3.8, 7.2 - difficultyRating * 0.32).toFixed(1))
+        ? Number(Math.max(6.2, 9.2 - difficultyRating * 0.28).toFixed(1))
         : 0;
 
     const runePlates: RunePlateNode[] = [];
     if (requiresSwitch && i < TOTAL_LEVELS) {
       const plateCount =
         i === 1
-          ? 2
+          ? 1
           : puzzleType === 'ordered_runes' || puzzleType === 'timed_runes'
-          ? difficultyRating >= 6 && stageArchetype !== 'pin_needle'
+          ? difficultyRating >= 7 && stageArchetype !== 'pin_needle'
             ? 3
             : 2
           : puzzleType === 'boulder_socket'
-          ? difficultyRating >= 7
-            ? 2
-            : 1
-          : difficultyRating >= 7
+          ? 1
+          : difficultyRating >= 8
           ? 3
-          : 2;
+          : difficultyRating >= 5
+          ? 2
+          : 1;
 
       const sideFlip = rng() < 0.5 ? 1 : -1;
       for (let pIdx = 0; pIdx < plateCount; pIdx++) {
         let fwdOffset = 0;
         let latOffset = 0;
-        if (plateCount === 1) {
+        if (i === 1) {
+          // Stage 1: place the single glowing rune plate right along the central trailhead lane
+          fwdOffset = 0.04 * width;
+          latOffset = 0.12 * depth;
+        } else if (plateCount === 1) {
           fwdOffset = (-0.12 + rng() * 0.22) * width;
-          latOffset = sideFlip * (0.22 + rng() * 0.1) * depth;
+          latOffset = sideFlip * (0.2 + rng() * 0.1) * depth;
         } else if (plateCount === 2) {
           fwdOffset =
-            (pIdx === 0 ? -0.18 + rng() * 0.1 : 0.06 + rng() * 0.12) * width;
+            (pIdx === 0 ? -0.16 + rng() * 0.1 : 0.06 + rng() * 0.1) * width;
           latOffset =
-            (pIdx === 0 ? -sideFlip : sideFlip) * (0.24 + rng() * 0.08) * depth;
+            (pIdx === 0 ? -sideFlip : sideFlip) * (0.22 + rng() * 0.08) * depth;
         } else {
           fwdOffset =
             pIdx === 0
-              ? (-0.22 + rng() * 0.07) * width
+              ? (-0.2 + rng() * 0.07) * width
               : pIdx === 1
-              ? (-0.04 + rng() * 0.1) * width
-              : (0.1 + rng() * 0.09) * width;
+              ? (-0.03 + rng() * 0.09) * width
+              : (0.1 + rng() * 0.08) * width;
           latOffset =
             pIdx === 0
-              ? -sideFlip * (0.25 + rng() * 0.07) * depth
+              ? -sideFlip * (0.23 + rng() * 0.07) * depth
               : pIdx === 1
-              ? sideFlip * (0.25 + rng() * 0.07) * depth
+              ? sideFlip * (0.23 + rng() * 0.07) * depth
               : (-0.08 + rng() * 0.16) * depth;
         }
         const rx = Number((dx * fwdOffset + perpX * latOffset).toFixed(2));
@@ -1186,7 +1214,7 @@ export function generate500Levels(seed = DEFAULT_SPIRE_SEED): LevelStep[] {
           index: pIdx,
           relX: rx,
           relZ: rz,
-          radius: 0.46, // Precision rune activation radius!
+          radius: i === 1 ? 0.64 : 0.58,
         });
       }
     }
@@ -1457,45 +1485,60 @@ export function generate500Levels(seed = DEFAULT_SPIRE_SEED): LevelStep[] {
           i === 12 ||
           i % 18 === 0);
       const npcSide = i % 2 === 0 ? 1 : -1;
-      const npcAngle = blocksPath ? headingRad : headingRad + npcSide * 1.35;
-      const distMult = blocksPath ? 0.28 : 0.34;
+      let npcAngle = blocksPath ? headingRad : headingRad + npcSide * 1.45;
+      const distMult = blocksPath ? 0.28 : 0.35;
+      let nRelX = Number((Math.cos(npcAngle) * (width * distMult)).toFixed(2));
+      let nRelZ = Number((Math.sin(npcAngle) * (depth * distMult)).toFixed(2));
+
+      // Ensure non-blocking NPCs never stand on top of a Rune Plate or Boulder Socket!
+      if (!blocksPath) {
+        const overlapsRune = runePlates.some(
+          (rp) => Math.hypot(nRelX - rp.relX, nRelZ - rp.relZ) < 0.95
+        );
+        if (overlapsRune) {
+          npcAngle = headingRad - npcSide * 1.45;
+          nRelX = Number((Math.cos(npcAngle) * (width * distMult)).toFixed(2));
+          nRelZ = Number((Math.sin(npcAngle) * (depth * distMult)).toFixed(2));
+        }
+      }
+
       npc = {
         id: `npc-step-${i}`,
         ...castTemplate,
         blocksPathByDefault: blocksPath,
-        relX: Number((Math.cos(npcAngle) * (width * distMult)).toFixed(2)),
-        relZ: Number((Math.sin(npcAngle) * (depth * distMult)).toFixed(2)),
+        relX: nRelX,
+        relZ: nRelZ,
       };
     }
 
     // ============================================================================
     // SISYPHEAN ROLLING STONE & MOUNTAIN HAZARD SELECTION SCALED BY RANDOM DIFFICULTY
     // ============================================================================
-    const speedScale = 1.15 + (difficultyRating / 10) * 1.05;
+    const speedScale = 0.92 + (difficultyRating / 10) * 0.65;
     if (i % 50 === 0 || i === TOTAL_LEVELS) {
       hazard = 'none';
       gauntletType = 'ranger_outpost';
     } else if (i === 1) {
       hazard = 'pusher';
-      hazardSpeed = 1.85;
-      hazardAmplitude = 0.85;
+      hazardSpeed = 1.25;
+      hazardAmplitude = 0.78;
       gauntletType = 'boulder_run';
     } else if (i === 2 || i === 5 || i === 8) {
       hazard = 'sweeper';
-      hazardSpeed = 2.05;
+      hazardSpeed = 1.45;
       gauntletType = 'sawmill_sweep';
     } else if (i === 3 || i === 6) {
       hazard = 'pusher';
-      hazardSpeed = 2.45;
-      hazardAmplitude = 0.92;
+      hazardSpeed = 1.75;
+      hazardAmplitude = 0.85;
       gauntletType = 'boulder_run';
     } else if (i === 4) {
       hazard = 'wind';
-      hazardSpeed = 2.25;
+      hazardSpeed = 1.65;
       gauntletType = 'wind_ridge';
     } else if (difficultyRating <= 2) {
-      hazard = rng() < 0.35 ? 'none' : 'wind';
-      hazardSpeed = 1.65;
+      hazard = rng() < 0.45 ? 'none' : 'wind';
+      hazardSpeed = 1.35;
       gauntletType = 'plank_bridge';
     } else {
       const hRoll = (rng() + i * 0.173) % 1;
@@ -1578,6 +1621,7 @@ export function generate500Levels(seed = DEFAULT_SPIRE_SEED): LevelStep[] {
       stageArchetype,
       surfaceTheme: pal.theme,
       gauntletType,
+      progressionPhase,
       difficultyRating,
       title: descTitle,
       psychologicalTrap:

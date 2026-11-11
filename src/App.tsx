@@ -40,6 +40,7 @@ import {
   createSeededRivalGhostRuns,
   getAltitudeAwareNpcDialogue,
   getAutoCameraModeForStep,
+  getStageProgressionBrief,
 } from './game/rules';
 import { soundEngine } from './game/audio';
 
@@ -122,6 +123,13 @@ const INITIAL_TELEMETRY: TelemetryPayload = {
   activeRuneCount: 0,
   totalRuneCount: 0,
   stepGateUnlocked: true,
+  stamina: 100,
+  isSprinting: false,
+  stageFailStreak: 0,
+  progressionBrief: getStageProgressionBrief(
+    GROUND_STEP_META,
+    createInitialPlayerState(0)
+  ),
   cameraMode: 'isometric',
   nextCameraShiftStep: CAMERA_SHIFT_INTERVAL_STEPS,
 };
@@ -239,6 +247,152 @@ export default function App() {
   const [isMuted, setIsMuted] = useState<boolean>(false);
   const [copiedReceipt, setCopiedReceipt] = useState<boolean>(false);
   const summitModalDismissedRef = React.useRef<boolean>(false);
+
+  // Responsive Device & Foldable Breakpoint State + Virtual Touch Controls
+  const [viewportInfo, setViewportInfo] = useState<{
+    width: number;
+    height: number;
+    deviceClass:
+      | 'foldable-cover'
+      | 'mobile-portrait'
+      | 'mobile-landscape'
+      | 'foldable-unfolded'
+      | 'tablet'
+      | 'desktop';
+    hasTouch: boolean;
+  }>(() => {
+    const w = typeof window !== 'undefined' ? window.innerWidth : 1280;
+    const h = typeof window !== 'undefined' ? window.innerHeight : 800;
+    const asp = w / Math.max(1, h);
+    const hasTouch =
+      typeof window !== 'undefined' &&
+      ('ontouchstart' in window || navigator.maxTouchPoints > 0);
+    const deviceClass =
+      w <= 375
+        ? 'foldable-cover'
+        : h <= 520 && w > h
+        ? 'mobile-landscape'
+        : w < 640
+        ? 'mobile-portrait'
+        : w <= 960 && asp >= 0.72 && asp <= 1.32
+        ? 'foldable-unfolded'
+        : w <= 1024
+        ? 'tablet'
+        : 'desktop';
+    return { width: w, height: h, deviceClass, hasTouch };
+  });
+
+  const [touchPadOverride, setTouchPadOverride] = useState<
+    'auto' | 'on' | 'off'
+  >('auto');
+  const [thumbstickPos, setThumbstickPos] = useState<{ x: number; y: number }>({
+    x: 0,
+    y: 0,
+  });
+  const [touchSprintActive, setTouchSprintActive] = useState<boolean>(false);
+  const thumbstickCenterRef = React.useRef<{ x: number; y: number } | null>(
+    null
+  );
+  const thumbstickPointerIdRef = React.useRef<number | null>(null);
+
+  useEffect(() => {
+    const updateViewport = () => {
+      const w = window.innerWidth;
+      const h = window.innerHeight;
+      const asp = w / Math.max(1, h);
+      const hasTouch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+      const deviceClass =
+        w <= 375
+          ? 'foldable-cover'
+          : h <= 520 && w > h
+          ? 'mobile-landscape'
+          : w < 640
+          ? 'mobile-portrait'
+          : w <= 960 && asp >= 0.72 && asp <= 1.32
+          ? 'foldable-unfolded'
+          : w <= 1024
+          ? 'tablet'
+          : 'desktop';
+      setViewportInfo({ width: w, height: h, deviceClass, hasTouch });
+      document.documentElement.dataset.deviceClass = deviceClass;
+    };
+    updateViewport();
+    window.addEventListener('resize', updateViewport);
+    window.visualViewport?.addEventListener('resize', updateViewport);
+    return () => {
+      window.removeEventListener('resize', updateViewport);
+      window.visualViewport?.removeEventListener('resize', updateViewport);
+    };
+  }, []);
+
+  const showTouchControls =
+    touchPadOverride === 'on' ||
+    (touchPadOverride === 'auto' &&
+      (viewportInfo.deviceClass !== 'desktop' || viewportInfo.hasTouch));
+
+  const getTouchBridge = () =>
+    (
+      window as unknown as {
+        __hawkTouchControls?: {
+          setJoystick: (x: number, z: number, sprint?: boolean) => void;
+          setSprint: (active: boolean) => void;
+          beginJump: () => void;
+          releaseJump: () => void;
+          snapAim: () => void;
+        };
+      }
+    ).__hawkTouchControls;
+
+  const handleThumbstickDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.stopPropagation();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    thumbstickPointerIdRef.current = e.pointerId;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    thumbstickCenterRef.current = { x: cx, y: cy };
+    const maxR = Math.max(28, rect.width * 0.38);
+    const dx = e.clientX - cx;
+    const dy = e.clientY - cy;
+    const dist = Math.hypot(dx, dy);
+    const clampedDist = Math.min(maxR, dist);
+    const angle = Math.atan2(dy, dx);
+    const nx = dist > 2 ? (Math.cos(angle) * clampedDist) / maxR : 0;
+    const ny = dist > 2 ? (Math.sin(angle) * clampedDist) / maxR : 0;
+    setThumbstickPos({ x: nx, y: ny });
+    const autoSprint = touchSprintActive || clampedDist / maxR > 0.85;
+    getTouchBridge()?.setJoystick(nx, ny, autoSprint);
+  };
+
+  const handleThumbstickMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (
+      thumbstickPointerIdRef.current !== e.pointerId ||
+      !thumbstickCenterRef.current
+    )
+      return;
+    e.stopPropagation();
+    const rect = e.currentTarget.getBoundingClientRect();
+    const maxR = Math.max(28, rect.width * 0.38);
+    const dx = e.clientX - thumbstickCenterRef.current.x;
+    const dy = e.clientY - thumbstickCenterRef.current.y;
+    const dist = Math.hypot(dx, dy);
+    const clampedDist = Math.min(maxR, dist);
+    const angle = Math.atan2(dy, dx);
+    const nx = dist > 2 ? (Math.cos(angle) * clampedDist) / maxR : 0;
+    const ny = dist > 2 ? (Math.sin(angle) * clampedDist) / maxR : 0;
+    setThumbstickPos({ x: nx, y: ny });
+    const autoSprint = touchSprintActive || clampedDist / maxR > 0.85;
+    getTouchBridge()?.setJoystick(nx, ny, autoSprint);
+  };
+
+  const handleThumbstickUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (thumbstickPointerIdRef.current !== e.pointerId) return;
+    e.stopPropagation();
+    thumbstickPointerIdRef.current = null;
+    thumbstickCenterRef.current = null;
+    setThumbstickPos({ x: 0, y: 0 });
+    getTouchBridge()?.setJoystick(0, 0, touchSprintActive);
+  };
 
   const [playerSkin, setPlayerSkin] = useState<ClimberSkinId>(() => {
     const saved = localStorage.getItem('sisyphus_skin') as ClimberSkinId;
@@ -988,11 +1142,11 @@ export default function App() {
           <div className="title-mist-ribbon-b absolute inset-x-[-15%] bottom-[14%] h-[34%] z-0" />
 
           {/* TOP BAR: FANCY "HAWK PEAK 500" EMBLEM (Left) & WORLD ZOOM SCOUT + CONTROLLER SETTINGS + AUDIO (Right) */}
-          <div className="relative z-10 flex items-center justify-between gap-2 sm:gap-3 pointer-events-auto shrink-0">
-            <div className="flex items-center gap-3 min-w-0">
+          <div className="relative z-10 flex flex-wrap items-center justify-between gap-1.5 sm:gap-3 pointer-events-auto shrink-0">
+            <div className="flex items-center gap-2 sm:gap-3 min-w-0">
               <svg
                 viewBox="0 0 478 68"
-                className="w-[210px] sm:w-[310px] md:w-[380px] h-auto drop-shadow-[0_6px_0_rgba(18,10,5,0.95)] shrink-0"
+                className="w-[155px] xs:w-[185px] sm:w-[290px] md:w-[375px] h-auto drop-shadow-[0_6px_0_rgba(18,10,5,0.95)] shrink-0"
                 role="img"
                 aria-label="Hawk Peak 500"
               >
@@ -1160,15 +1314,18 @@ export default function App() {
                     data-testid="title-world-view-btn"
                     onClick={handleToggleWholeWorldZoom}
                     title="Toggle Whole-World Stage Preview before starting the climb [Press Z]"
-                    className={`px-2.5 py-1 rounded font-mono-tabular font-black text-[10px] sm:text-xs cursor-pointer transition-colors ${
+                    className={`px-2 sm:px-2.5 py-1 rounded font-mono-tabular font-black text-[10px] sm:text-xs cursor-pointer transition-colors ${
                       isWholeWorldZoom
                         ? 'bg-[#facc15] text-[#1c1008]'
                         : 'bg-[#181009]/80 hover:bg-[#2e1f12] text-[#fbf3db]'
                     }`}
                   >
-                    {isWholeWorldZoom
-                      ? `WORLD VIEW (${zoomPercentage}%)`
-                      : `SCOUT WORLD [Z] (${zoomPercentage}%)`}
+                    <span className="hidden sm:inline">
+                      {isWholeWorldZoom
+                        ? `WORLD VIEW (${zoomPercentage}%)`
+                        : `SCOUT WORLD [Z] (${zoomPercentage}%)`}
+                    </span>
+                    <span className="sm:hidden">{zoomPercentage}%</span>
                   </button>
 
                   <button
@@ -1279,9 +1436,9 @@ export default function App() {
           {/* CENTER STAGE: 100% UNOBSTRUCTED 3D HERO SHOWCASE */}
           <div className="flex-1 min-h-0 pointer-events-none" />
 
-          {/* BOTTOM BAR: CLEAN 4-OUTFIT SELECTOR STRIP (NO SCROLLBAR) + GIANT PLAY HIKE CTA */}
-          <div className="relative z-10 pointer-events-auto w-full shrink-0 flex items-end justify-between gap-3">
-            <div className="flex items-center gap-2 overflow-visible max-w-full py-0.5 watch-hide">
+          {/* BOTTOM BAR: RESPONSIVE 4-OUTFIT SELECTOR + GIANT PLAY HIKE CTA Across Mobile, Foldables & Desktop */}
+          <div className="relative z-10 pointer-events-auto w-full shrink-0 flex flex-col sm:flex-row items-stretch sm:items-end justify-between gap-2 sm:gap-3">
+            <div className="grid grid-cols-2 sm:flex sm:items-center gap-1.5 sm:gap-2 overflow-visible max-w-full py-0.5 watch-hide">
               {CHARACTER_OUTFITS.map((item) => {
                 const selected = playerSkin === item.id;
                 return (
@@ -1290,16 +1447,16 @@ export default function App() {
                     type="button"
                     data-testid={`loadout-outfit-${item.id}`}
                     onClick={() => handleSelectSkin(item.id)}
-                    className={`game-skew-plate px-3 py-2 rounded-md cursor-pointer transition-all shrink-0 ${
+                    className={`game-skew-plate px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-md cursor-pointer transition-all shrink-0 ${
                       selected
                         ? 'ring-2 ring-[#facc15] brightness-110 -translate-y-0.5'
                         : 'opacity-90 hover:opacity-100 hover:brightness-105'
                     }`}
                   >
-                    <div className="game-unskew flex items-center gap-2">
+                    <div className="game-unskew flex items-center gap-1.5 sm:gap-2">
                       <svg
                         viewBox="0 0 28 24"
-                        className="w-6 h-5 shrink-0 drop-shadow"
+                        className="w-5 h-4 sm:w-6 sm:h-5 shrink-0 drop-shadow"
                       >
                         <polygon
                           points="14,2 25,9 21,22 7,22 3,9"
@@ -1316,12 +1473,12 @@ export default function App() {
                           strokeWidth="2"
                         />
                       </svg>
-                      <div className="text-left">
-                        <div className="font-display text-xs font-black text-white leading-none">
+                      <div className="text-left min-w-0">
+                        <div className="font-display text-[11px] sm:text-xs font-black text-white leading-none truncate">
                           {item.name}
                         </div>
                         <div
-                          className={`text-[9px] font-mono-tabular font-bold mt-0.5 ${
+                          className={`text-[8px] sm:text-[9px] font-mono-tabular font-bold mt-0.5 ${
                             selected ? 'text-[#4ade80]' : 'text-[#a89076]'
                           }`}
                         >
@@ -1340,10 +1497,10 @@ export default function App() {
                 data-start="true"
                 data-testid="start-climb-btn"
                 onClick={handleStartGame}
-                className="game-play-cta px-7 sm:px-9 py-2.5 rounded-md cursor-pointer flex items-center justify-center"
+                className="game-play-cta w-full sm:w-auto px-6 sm:px-9 py-2 sm:py-2.5 rounded-md cursor-pointer flex items-center justify-center"
               >
-                <span className="game-unskew game-play-text font-display font-black text-xl sm:text-2xl tracking-wider uppercase whitespace-nowrap">
-                  PLAY HIKE
+                <span className="game-unskew game-play-text font-display font-black text-lg sm:text-2xl tracking-wider whitespace-nowrap">
+                  Start Hike
                 </span>
               </button>
             </div>
@@ -1403,7 +1560,7 @@ export default function App() {
                 {/* Atmospheric Layer Indicator */}
                 <div
                   data-testid="hud-atmosphere-badge"
-                  className={`px-3 py-1.5 rounded-xl border text-[10px] sm:text-xs font-mono-tabular font-black tracking-wider uppercase shadow watch-hide ${atmoMeta.colorClass}`}
+                  className={`hidden md:flex px-3 py-1.5 rounded-xl border text-[10px] sm:text-xs font-mono-tabular font-black tracking-wider uppercase shadow watch-hide ${atmoMeta.colorClass}`}
                 >
                   {atmoMeta.badge}
                 </div>
@@ -1413,7 +1570,7 @@ export default function App() {
                   telemetry.requiresBoulderSocket) && (
                   <div
                     data-testid="hud-rune-status"
-                    className={`px-3 py-1.5 rounded-xl border-2 text-xs font-mono-tabular font-black flex items-center gap-1.5 shadow ${
+                    className={`px-2.5 sm:px-3 py-1 sm:py-1.5 rounded-xl border-2 text-[10px] sm:text-xs font-mono-tabular font-black flex items-center gap-1.5 shadow ${
                       telemetry.stepGateUnlocked
                         ? 'bg-emerald-950/90 text-emerald-300 border-emerald-400'
                         : telemetry.puzzleType === 'ordered_runes'
@@ -1427,34 +1584,34 @@ export default function App() {
                   >
                     <span>
                       {telemetry.stepGateUnlocked
-                        ? `PUZZLE SOLVED · GATE UNLOCKED (${telemetry.totalRuneCount}/${telemetry.totalRuneCount})`
+                        ? `GATE UNLOCKED (${telemetry.totalRuneCount}/${telemetry.totalRuneCount})`
                         : telemetry.puzzleType === 'boulder_socket'
                         ? `SISYPHUS STONE: ${
                             telemetry.boulderSocketLocked
                               ? 'SOCKETED ✓'
-                              : 'DRIVE UPHILL TO SOCKET (ROLLS BACK!)'
+                              : 'PUSH TO SOCKET'
                           } + RUNE ${telemetry.activeRuneCount}/${telemetry.totalRuneCount}`
                         : telemetry.puzzleType === 'ordered_runes'
-                        ? `HARMONIC RUNES: DECIPHER SEQUENCE (${telemetry.activeRuneCount}/${telemetry.totalRuneCount})`
+                        ? `RUNES: ORDER (${telemetry.activeRuneCount}/${telemetry.totalRuneCount})`
                         : telemetry.puzzleType === 'timed_runes'
-                        ? `⏱ TIMED RUNE RELAY: ${
+                        ? `⏱ RUNES: ${
                             telemetry.runeTimeRemaining > 0
                               ? `${telemetry.runeTimeRemaining.toFixed(1)}s`
                               : 'READY'
                           } (${telemetry.activeRuneCount}/${telemetry.totalRuneCount})`
-                        : `RUNE LOCK ${telemetry.activeRuneCount}/${telemetry.totalRuneCount} · STEP ON RUNES`}
+                        : `RUNE LOCK ${telemetry.activeRuneCount}/${telemetry.totalRuneCount}`}
                     </span>
                   </div>
                 )}
 
                 {/* River & Bridge Physics Indicator in Base Camp Valley */}
                 {telemetry.inRiverWater && (
-                  <div className="px-3 py-1.5 rounded-xl bg-cyan-950/90 border border-cyan-400 text-cyan-200 text-xs font-mono-tabular font-black">
+                  <div className="px-2.5 py-1 rounded-xl bg-cyan-950/90 border border-cyan-400 text-cyan-200 text-[10px] sm:text-xs font-mono-tabular font-black">
                     RIVER CURRENT · WADING
                   </div>
                 )}
                 {telemetry.onRiverBridge && (
-                  <div className="px-3 py-1.5 rounded-xl bg-amber-950/90 border border-amber-400 text-amber-200 text-xs font-mono-tabular font-black watch-hide">
+                  <div className="hidden sm:block px-2.5 py-1 rounded-xl bg-amber-950/90 border border-amber-400 text-amber-200 text-xs font-mono-tabular font-black watch-hide">
                     CEDAR ARCH BRIDGE
                   </div>
                 )}
@@ -1470,7 +1627,7 @@ export default function App() {
                         GROUND_STEP_META.npc!
                     )
                   }
-                  className={`px-3 py-1.5 rounded-xl border-2 border-[#1c1008] shadow font-extrabold text-xs cursor-pointer flex items-center gap-1.5 ${
+                  className={`px-2.5 sm:px-3 py-1 sm:py-1.5 rounded-xl border-2 border-[#1c1008] shadow font-extrabold text-[11px] sm:text-xs cursor-pointer flex items-center gap-1.5 ${
                     telemetry.nearbyNpcBlocking
                       ? 'bg-rose-600 hover:bg-rose-500 text-white'
                       : 'bg-[#f3e9d2] hover:bg-amber-200 text-[#241911]'
@@ -1481,7 +1638,7 @@ export default function App() {
                       ? telemetry.nearbyNpcBlocking
                         ? `POV Confront ${telemetry.nearbyNpc.name} [E]`
                         : `POV Talk to ${telemetry.nearbyNpc.name} [E]`
-                      : 'Ask Trail Guides (AI) [T]'}
+                      : 'Trail Guides [T]'}
                   </span>
                 </button>
 
@@ -1489,7 +1646,7 @@ export default function App() {
                 {screenShakeBanner?.active && (
                   <div
                     data-testid="screen-shake-badge"
-                    className="px-3 py-1.5 rounded-xl bg-rose-950/95 border-2 border-rose-400 text-rose-200 text-xs font-mono-tabular font-black uppercase shadow-lg"
+                    className="px-2.5 py-1 rounded-xl bg-rose-950/95 border-2 border-rose-400 text-rose-200 text-[10px] sm:text-xs font-mono-tabular font-black uppercase shadow-lg"
                   >
                     {screenShakeBanner.label} · -
                     {screenShakeBanner.fallDropMeters.toFixed(1)}m DROP
@@ -1514,9 +1671,9 @@ export default function App() {
               </div>
             </div>
 
-            {/* Top-Right Cluster: Ghosts [G], Zoom [- / +], Camera Angle [C], Vista [V], Controls, Mute [M], Pause [P] */}
+            {/* Top-Right Cluster: Ghosts [G], Zoom [- / +], Camera Angle [C], Vista [V], Touch Pad Toggle, Controls, Mute [M], Pause [P] */}
             <div className="pointer-events-auto flex flex-col items-end gap-1.5 shrink-0">
-              <div className="flex items-center gap-1.5">
+              <div className="flex flex-wrap items-center justify-end gap-1 sm:gap-1.5">
                 {/* 3D Ghost / Phantom Climber Toggle Button */}
                 <button
                   type="button"
@@ -1527,7 +1684,7 @@ export default function App() {
                     setGhostsEnabled((g) => !g);
                   }}
                   title="Toggle 3D Phantom Climber Ghosts (Your Past Best Runs & Rival Climbers) [Press G]"
-                  className={`timber-plaque px-2.5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer watch-hide hover:brightness-110 ${
+                  className={`hidden lg:flex timber-plaque px-2.5 py-2 rounded-xl text-xs font-bold items-center gap-1.5 cursor-pointer watch-hide hover:brightness-110 ${
                     ghostsEnabled ? 'text-cyan-300' : 'text-stone-400 opacity-75'
                   }`}
                 >
@@ -1544,14 +1701,14 @@ export default function App() {
                   </span>
                 </button>
 
-                {/* Compact HUD Zoom Controls */}
-                <div className="timber-plaque px-2 py-1.5 rounded-xl flex items-center gap-1 watch-hide">
+                {/* Compact HUD Zoom Controls (Pinch-to-Zoom active on mobile; pill shown on sm+ screens) */}
+                <div className="hidden sm:flex timber-plaque px-1.5 sm:px-2 py-1 sm:py-1.5 rounded-xl items-center gap-1 watch-hide">
                   <button
                     type="button"
                     tabIndex={-1}
                     data-testid="hud-zoom-out-btn"
                     onClick={handleZoomOut}
-                    title="Zoom Out [- / Scroll Wheel / LB]"
+                    title="Zoom Out [- / Scroll Wheel / Pinch]"
                     aria-label="Zoom Out"
                     className="px-1.5 py-0.5 rounded bg-black/35 hover:bg-black/55 text-amber-300 font-mono-tabular font-black text-xs cursor-pointer"
                   >
@@ -1563,7 +1720,7 @@ export default function App() {
                     data-testid="hud-world-zoom-btn"
                     onClick={handleToggleWholeWorldZoom}
                     title="Toggle Whole-World Stage Zoom [Press Z / Select]"
-                    className="px-1.5 py-0.5 text-[10px] font-mono-tabular font-black text-amber-100 hover:text-amber-300 cursor-pointer"
+                    className="px-1 sm:px-1.5 py-0.5 text-[10px] font-mono-tabular font-black text-amber-100 hover:text-amber-300 cursor-pointer"
                   >
                     {zoomPercentage}%
                   </button>
@@ -1572,7 +1729,7 @@ export default function App() {
                     tabIndex={-1}
                     data-testid="hud-zoom-in-btn"
                     onClick={handleZoomIn}
-                    title="Zoom In [+ / Scroll Wheel / RB]"
+                    title="Zoom In [+ / Scroll Wheel / Pinch]"
                     aria-label="Zoom In"
                     className="px-1.5 py-0.5 rounded bg-black/35 hover:bg-black/55 text-amber-300 font-mono-tabular font-black text-xs cursor-pointer"
                   >
@@ -1587,7 +1744,7 @@ export default function App() {
                   onClick={cycleCameraAngle}
                   aria-label={`Switch Camera Angle [C]: ${activeCamPreset.shortLabel}`}
                   title={`Camera shifts automatically every 12 stages · Current: ${activeCamPreset.label} [Press C / Y]`}
-                  className="timber-plaque px-2.5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer watch-hide hover:brightness-110"
+                  className="timber-plaque px-2 sm:px-2.5 py-1.5 sm:py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer watch-hide hover:brightness-110"
                 >
                   <svg viewBox="0 0 20 20" className="w-4 h-4 shrink-0">
                     <rect
@@ -1600,7 +1757,9 @@ export default function App() {
                     />
                     <polygon points="14,8 19,5 19,15 14,12" fill="#f59e0b" />
                   </svg>
-                  <span>{activeCamPreset.shortLabel} [C]</span>
+                  <span className="hidden md:inline">
+                    {activeCamPreset.shortLabel} [C]
+                  </span>
                 </button>
 
                 <button
@@ -1618,7 +1777,7 @@ export default function App() {
                   }}
                   aria-label="Trail Vista Overview [V]"
                   title="Toggle Whole-World Vista [Press V / Z]"
-                  className="timber-plaque px-2.5 py-2 rounded-xl text-amber-300 text-xs font-bold cursor-pointer watch-hide hover:brightness-110"
+                  className="hidden sm:inline-flex timber-plaque px-2.5 py-2 rounded-xl text-amber-300 text-xs font-bold cursor-pointer watch-hide hover:brightness-110"
                 >
                   {vistaOverviewActive || isWholeWorldZoom
                     ? 'Close Vista [V]'
@@ -1713,7 +1872,7 @@ export default function App() {
 
           {/* Milestone / Perspective Shift Toast Banner */}
           {milestoneBanner && (
-            <div className="fixed top-28 left-1/2 -translate-x-1/2 z-20 pointer-events-none">
+            <div className="fixed top-36 left-1/2 -translate-x-1/2 z-20 pointer-events-none">
               <div className="timber-plaque px-5 py-2 rounded-2xl text-center border-2 border-amber-400/60 shadow-xl">
                 <div className="font-display text-sm sm:text-base font-black text-[#fef9c3]">
                   {milestoneBanner.title}
@@ -1899,51 +2058,177 @@ export default function App() {
             </div>
           )}
 
-          {/* Live Gemini AI Narrator Fall Roast or NPC Bark Banner when not in active dialogue */}
-          {!activeDialogueNpc &&
-            (tauntBanner || telemetry.nearbyNpcBark) && (
-              <div className="mx-auto mb-2 max-w-xl w-[92vw] pointer-events-auto watch-hide">
-                <div
-                  data-testid="ai-narrator-banner"
-                  onClick={() => {
-                    if (telemetry.nearbyNpc) {
-                      handleOpenNpcDialogue(telemetry.nearbyNpc);
-                    }
-                  }}
-                  className="parchment-sheet px-4 py-2.5 rounded-xl cursor-pointer text-center shadow-lg space-y-1"
-                >
-                  {tauntBanner ? (
-                    <>
-                      <div className="flex items-center justify-center gap-2 text-[10px] font-mono-tabular font-black uppercase tracking-wider text-amber-900">
-                        <span>
-                          {tauntBanner.source === 'gemini'
-                            ? '● GEMINI AI LIVE NARRATOR'
-                            : tauntBanner.loading
-                            ? '● AI NARRATOR ANALYZING FALL...'
-                            : '● HAWK PEAK LIVE NARRATOR'}
-                        </span>
-                        {typeof tauntBanner.fallDropMeters === 'number' && (
-                          <span className="text-rose-700">
-                            · -{tauntBanner.fallDropMeters.toFixed(1)}m DROP (-
-                            {tauntBanner.stepsLost} STAGES)
+          {/* Bottom Zone: Narrator Banner + Interactive Mobile & Foldable Virtual Touch Controls */}
+          <div className="w-full flex flex-col items-center gap-2">
+            {/* Live Gemini AI Narrator Fall Roast or NPC Bark Banner when not in active dialogue */}
+            {!activeDialogueNpc &&
+              (tauntBanner || telemetry.nearbyNpcBark) && (
+                <div className="mx-auto max-w-xl w-[92vw] pointer-events-auto watch-hide">
+                  <div
+                    data-testid="ai-narrator-banner"
+                    onClick={() => {
+                      if (telemetry.nearbyNpc) {
+                        handleOpenNpcDialogue(telemetry.nearbyNpc);
+                      }
+                    }}
+                    className="parchment-sheet px-3.5 py-2 rounded-xl cursor-pointer text-center shadow-lg space-y-0.5"
+                  >
+                    {tauntBanner ? (
+                      <>
+                        <div className="flex items-center justify-center gap-2 text-[10px] font-mono-tabular font-black uppercase tracking-wider text-amber-900">
+                          <span>
+                            {tauntBanner.source === 'gemini'
+                              ? '● GEMINI AI LIVE NARRATOR'
+                              : tauntBanner.loading
+                              ? '● AI NARRATOR ANALYZING FALL...'
+                              : '● HAWK PEAK LIVE NARRATOR'}
                           </span>
-                        )}
-                      </div>
-                      <p
-                        data-testid="ai-narrator-quote"
-                        className="text-xs sm:text-sm font-black leading-snug text-zinc-900"
-                      >
-                        &ldquo;{tauntBanner.quote}&rdquo; — {tauntBanner.author}
+                          {typeof tauntBanner.fallDropMeters === 'number' && (
+                            <span className="text-rose-700">
+                              · -{tauntBanner.fallDropMeters.toFixed(1)}m DROP (-
+                              {tauntBanner.stepsLost} STAGES)
+                            </span>
+                          )}
+                        </div>
+                        <p
+                          data-testid="ai-narrator-quote"
+                          className="text-xs sm:text-sm font-black leading-snug text-zinc-900"
+                        >
+                          &ldquo;{tauntBanner.quote}&rdquo; — {tauntBanner.author}
+                        </p>
+                      </>
+                    ) : (
+                      <p className="text-xs sm:text-sm font-black leading-snug">
+                        {telemetry.nearbyNpcBark}
                       </p>
-                    </>
-                  ) : (
-                    <p className="text-xs sm:text-sm font-black leading-snug">
-                      {telemetry.nearbyNpcBark}
-                    </p>
-                  )}
+                    )}
+                  </div>
+                </div>
+              )}
+
+            {/* Interactive Mobile, Tablet & Foldable Touch Control Deck */}
+            {showTouchControls && !activeDialogueNpc && (
+              <div
+                data-testid="mobile-touch-controls"
+                className="w-full flex items-end justify-between gap-3 pointer-events-none select-none touch-none pt-1"
+              >
+                {/* Left Thumb Zone: 360° Analog Virtual Thumbstick */}
+                <div
+                  data-testid="mobile-virtual-joystick"
+                  onPointerDown={handleThumbstickDown}
+                  onPointerMove={handleThumbstickMove}
+                  onPointerUp={handleThumbstickUp}
+                  onPointerCancel={handleThumbstickUp}
+                  className="pointer-events-auto relative w-24 h-24 sm:w-28 sm:h-28 rounded-full border-2 border-amber-300/65 bg-[#181009]/85 shadow-[0_6px_18px_rgba(0,0,0,0.65)] flex items-center justify-center touch-none cursor-grab active:cursor-grabbing mobile-landscape-compact-stick"
+                >
+                  {/* Cardinal Guides */}
+                  <div className="absolute inset-2 rounded-full border border-amber-400/25 pointer-events-none" />
+                  <span className="absolute top-1.5 text-[8px] font-mono-tabular font-black text-amber-300/70 pointer-events-none">
+                    ▲
+                  </span>
+                  <span className="absolute bottom-1.5 text-[8px] font-mono-tabular font-black text-amber-300/70 pointer-events-none">
+                    ▼
+                  </span>
+                  <span className="absolute left-1.5 text-[8px] font-mono-tabular font-black text-amber-300/70 pointer-events-none">
+                    ◀
+                  </span>
+                  <span className="absolute right-1.5 text-[8px] font-mono-tabular font-black text-amber-300/70 pointer-events-none">
+                    ▶
+                  </span>
+
+                  {/* Movable Thumb Puck */}
+                  <div
+                    className="w-10 h-10 sm:w-11 sm:h-11 rounded-full bg-gradient-to-b from-amber-300 to-amber-500 border-2 border-[#1c1008] shadow-md flex items-center justify-center pointer-events-none transition-transform duration-75"
+                    style={{
+                      transform: `translate3d(${Math.round(
+                        thumbstickPos.x * 28
+                      )}px, ${Math.round(thumbstickPos.y * 28)}px, 0)`,
+                    }}
+                  >
+                    <span className="text-[9px] font-mono-tabular font-black text-[#1c1008]">
+                      MOVE
+                    </span>
+                  </div>
+                </div>
+
+                {/* Right Thumb Zone: Sprint / Snap Aim + Large Tactile HOLD-TO-JUMP Button */}
+                <div className="pointer-events-auto flex items-end gap-2 sm:gap-2.5 touch-none">
+                  <div className="flex flex-col items-end gap-1.5">
+                    <button
+                      type="button"
+                      data-testid="mobile-aim-btn"
+                      onPointerDown={(e) => {
+                        e.stopPropagation();
+                        getTouchBridge()?.snapAim();
+                      }}
+                      className="px-3 py-1.5 rounded-xl border-2 border-[#1c1008] bg-[#f3e9d2] active:bg-amber-300 text-[#1c1008] font-mono-tabular font-black text-[10px] sm:text-xs shadow cursor-pointer touch-none"
+                    >
+                      AIM NEXT
+                    </button>
+
+                    <button
+                      type="button"
+                      data-testid="mobile-sprint-btn"
+                      onPointerDown={(e) => {
+                        e.stopPropagation();
+                        e.currentTarget.setPointerCapture(e.pointerId);
+                        setTouchSprintActive(true);
+                        getTouchBridge()?.setSprint(true);
+                      }}
+                      onPointerUp={(e) => {
+                        e.stopPropagation();
+                        setTouchSprintActive(false);
+                        getTouchBridge()?.setSprint(false);
+                      }}
+                      onPointerCancel={() => {
+                        setTouchSprintActive(false);
+                        getTouchBridge()?.setSprint(false);
+                      }}
+                      className={`px-3 py-2 rounded-xl border-2 border-[#1c1008] font-mono-tabular font-black text-[10px] sm:text-xs shadow cursor-pointer touch-none ${
+                        touchSprintActive || telemetry.isSprinting
+                          ? 'bg-amber-400 text-[#1c1008]'
+                          : 'bg-[#2a1c11]/90 text-amber-200 border-amber-400/60'
+                      }`}
+                    >
+                      ⚡ SPRINT
+                    </button>
+                  </div>
+
+                  {/* Primary Hold-to-Charge & Release-to-Vault Button */}
+                  <button
+                    type="button"
+                    data-testid="mobile-jump-btn"
+                    onPointerDown={(e) => {
+                      e.stopPropagation();
+                      e.currentTarget.setPointerCapture(e.pointerId);
+                      getTouchBridge()?.beginJump();
+                    }}
+                    onPointerUp={(e) => {
+                      e.stopPropagation();
+                      getTouchBridge()?.releaseJump();
+                    }}
+                    onPointerCancel={() => {
+                      getTouchBridge()?.releaseJump();
+                    }}
+                    className={`w-20 h-20 sm:w-24 sm:h-24 rounded-full border-4 border-[#1c1008] shadow-[0_6px_0_#1c1008] active:translate-y-0.5 flex flex-col items-center justify-center cursor-pointer touch-none transition-colors mobile-landscape-compact-jump ${
+                      telemetry.isCharging
+                        ? 'bg-gradient-to-b from-emerald-400 to-emerald-600 text-zinc-950 ring-4 ring-amber-300'
+                        : 'bg-gradient-to-b from-amber-300 via-amber-400 to-orange-500 text-[#1c1008]'
+                    }`}
+                  >
+                    <span className="font-display text-sm sm:text-base font-black leading-none tracking-wide">
+                      {telemetry.isCharging ? 'RELEASE' : 'JUMP'}
+                    </span>
+                    <span className="text-[10px] font-mono-tabular font-black mt-0.5">
+                      {telemetry.isCharging
+                        ? `${Math.round(telemetry.chargeRatio * 100)}%`
+                        : 'HOLD'}
+                    </span>
+                  </button>
                 </div>
               </div>
             )}
+          </div>
         </div>
       )}
 
@@ -2034,7 +2319,7 @@ export default function App() {
         </div>
       )}
 
-      {/* 5. CONTROLLER, MOUSE AIM, WORLD ZOOM & GHOST MODE SETTINGS MODAL (Non-Scrollable, Fits Game Screen Dimensions) */}
+      {/* 5. CONTROLLER, MOUSE AIM, TOUCH PAD, WORLD ZOOM & GHOST MODE SETTINGS MODAL */}
       {settingsModalOpen && (
         <div
           role="dialog"
@@ -2044,15 +2329,15 @@ export default function App() {
           className="fixed inset-0 z-40 flex items-center justify-center p-2.5 sm:p-4 pointer-events-auto overflow-hidden"
           style={{ backgroundColor: 'rgba(18, 12, 7, 0.85)' }}
         >
-          <div className="voxel-panel w-full max-w-3xl max-h-[calc(100vh-20px)] overflow-hidden p-3.5 sm:p-4 space-y-2.5 rounded-2xl flex flex-col justify-between">
+          <div className="voxel-panel w-full max-w-3xl max-h-[calc(100dvh-20px)] overflow-y-auto p-3.5 sm:p-4 space-y-2.5 rounded-2xl flex flex-col justify-between">
             {/* Header Row */}
             <div className="flex items-center justify-between gap-3 shrink-0">
               <div>
                 <div className="text-[10px] font-mono-tabular font-black text-amber-800 uppercase leading-tight">
-                  Hawk Peak 500 · Input, Optics &amp; Ghost Climber Configuration
+                  Hawk Peak 500 · Input, Optics, Touch &amp; Ghost Configuration
                 </div>
                 <h2 className="font-display text-lg sm:text-xl font-black text-zinc-900 leading-tight">
-                  Mouse Aim, Zoom, Ghost Mode &amp; Controller Settings
+                  Touch Pad, Mouse Aim, Zoom, Ghost Mode &amp; Controller
                 </h2>
               </div>
               <button
@@ -2124,7 +2409,7 @@ export default function App() {
               </div>
             </div>
 
-            {/* 2-Column Main Settings Grid (Zero Vertical Scrolling) */}
+            {/* 2-Column Main Settings Grid */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 shrink-0">
               {/* Left Column: Mouse Aiming & World Zoom */}
               <div className="p-3 bg-amber-50/90 border-2 border-[#18181b] rounded-xl space-y-2.5 flex flex-col justify-between">
@@ -2199,7 +2484,7 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Right Column: Controller Configuration */}
+              {/* Right Column: Controller & Touch Pad Configuration */}
               <div className="p-3 bg-amber-50/90 border-2 border-[#18181b] rounded-xl space-y-2.5 flex flex-col justify-between">
                 <div className="flex items-center justify-between gap-2">
                   <div>
@@ -2274,7 +2559,20 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="flex items-center justify-between gap-2 pt-1 border-t border-amber-900/15">
+                <div className="flex flex-wrap items-center justify-between gap-1.5 pt-1 border-t border-amber-900/15">
+                  <button
+                    type="button"
+                    data-testid="settings-touchpad-mode-btn"
+                    onClick={() =>
+                      setTouchPadOverride((prev) =>
+                        prev === 'auto' ? 'on' : prev === 'on' ? 'off' : 'auto'
+                      )
+                    }
+                    className="px-2.5 py-1 rounded-lg border border-stone-800 bg-amber-200 text-[11px] font-bold text-stone-900 cursor-pointer"
+                  >
+                    Touch Pad: {touchPadOverride.toUpperCase()}
+                  </button>
+
                   <button
                     type="button"
                     onClick={() =>
@@ -2282,7 +2580,7 @@ export default function App() {
                         invertControllerY: !controlSettings.invertControllerY,
                       })
                     }
-                    className="px-2.5 py-1 rounded-lg border border-stone-800 bg-white text-[11px] font-bold text-stone-900 cursor-pointer"
+                    className="px-2 py-1 rounded-lg border border-stone-800 bg-white text-[11px] font-bold text-stone-900 cursor-pointer"
                   >
                     Invert Y: {controlSettings.invertControllerY ? 'ON' : 'OFF'}
                   </button>
@@ -2295,7 +2593,7 @@ export default function App() {
                           !controlSettings.controllerVibration,
                       })
                     }
-                    className="px-2.5 py-1 rounded-lg border border-stone-800 bg-white text-[11px] font-bold text-stone-900 cursor-pointer"
+                    className="px-2 py-1 rounded-lg border border-stone-800 bg-white text-[11px] font-bold text-stone-900 cursor-pointer"
                   >
                     Rumble: {controlSettings.controllerVibration ? 'ON' : 'OFF'}
                   </button>
@@ -2307,19 +2605,20 @@ export default function App() {
             <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-amber-900/20 shrink-0">
               <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[10px] font-mono-tabular text-stone-800">
                 <span>
-                  <strong className="text-zinc-950">L-Stick:</strong> Move
+                  <strong className="text-zinc-950">Screen:</strong>{' '}
+                  {viewportInfo.deviceClass.toUpperCase()} ({viewportInfo.width}×
+                  {viewportInfo.height})
                 </span>
                 <span>
-                  <strong className="text-zinc-950">R-Stick/Mouse:</strong> Aim
+                  <strong className="text-zinc-950">Thumbstick/WASD:</strong>{' '}
+                  Move
                 </span>
                 <span>
-                  <strong className="text-zinc-950">A/RT/Space:</strong> Jump
+                  <strong className="text-zinc-950">Hold Jump/Space:</strong>{' '}
+                  Vault
                 </span>
                 <span>
-                  <strong className="text-zinc-950">G:</strong> Ghosts
-                </span>
-                <span>
-                  <strong className="text-zinc-950">LB/RB/Z:</strong> Zoom
+                  <strong className="text-zinc-950">Pinch/Scroll:</strong> Zoom
                 </span>
               </div>
 
@@ -2329,6 +2628,7 @@ export default function App() {
                   onClick={() => {
                     updateControlSettings(DEFAULT_CONTROL_SETTINGS);
                     setGhostsEnabled(true);
+                    setTouchPadOverride('auto');
                     setZoomFactor(1.0);
                     setAltitudePanOffset(0);
                   }}

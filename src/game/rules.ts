@@ -11,6 +11,7 @@ import {
   NpcDialogueChoice,
   PHILOSOPHICAL_ENDING_QUOTE,
   PHILOSOPHICAL_TAUNTS,
+  StageProgressionPhase,
   StagePuzzleType,
   TOTAL_LEVELS,
   TrailNpcData,
@@ -207,6 +208,9 @@ export interface PlayerState {
   teeterAmount: number;
   isTumbling: boolean;
   tumbleSpin: number;
+  stamina: number; // 0 to 100
+  isSprinting: boolean;
+  stageFailStreak: number;
   peakAirborneY?: number;
   won: boolean;
 }
@@ -242,8 +246,8 @@ export const MAX_JUMP_HORIZ_SPEED = 9.6;
 export const MIN_JUMP_VERT_SPEED = 4.8;
 export const MAX_JUMP_VERT_SPEED = 11.0;
 export const CHARGE_FULL_DURATION = 0.88;
-export const GROUND_NUDGE_SPEED = 3.4;
-export const AIR_CONTROL_ACCEL = 1.15;
+export const GROUND_NUDGE_SPEED = 4.6;
+export const AIR_CONTROL_ACCEL = 4.6;
 export const PLAYER_COLLISION_RADIUS = 0.31;
 
 export function createInitialPlayerState(startStep = 0): PlayerState {
@@ -291,6 +295,9 @@ export function createInitialPlayerState(startStep = 0): PlayerState {
       teeterAmount: 0,
       isTumbling: false,
       tumbleSpin: 0,
+      stamina: 100,
+      isSprinting: false,
+      stageFailStreak: 0,
       won: false,
     };
   }
@@ -343,6 +350,9 @@ export function createInitialPlayerState(startStep = 0): PlayerState {
     teeterAmount: 0,
     isTumbling: false,
     tumbleSpin: 0,
+    stamina: 100,
+    isSprinting: false,
+    stageFailStreak: 0,
     won: stepObj.stepNumber >= TOTAL_LEVELS,
   };
 }
@@ -1215,6 +1225,7 @@ export interface StepPhysicsResult {
   stepsLost: number;
   knockedByHazard: boolean;
   bouncedOffLedge: boolean;
+  repulsedByLockedGate?: boolean;
   triggeredGlitch: boolean;
   reachedSummit: boolean;
   activatedRunePlate?: boolean;
@@ -1230,6 +1241,20 @@ export interface StepPhysicsResult {
   fallDropMeters?: number;
 }
 
+export interface StageProgressionChecklistItem {
+  id: string;
+  label: string;
+  completed: boolean;
+}
+
+export interface StageProgressionBrief {
+  stepNumber: number;
+  progressionPhase: StageProgressionPhase;
+  phaseBadge: string;
+  checklist: StageProgressionChecklistItem[];
+  readyToAdvance: boolean;
+}
+
 export function isStepGateUnlocked(
   step: LevelStep,
   state: PlayerState
@@ -1243,6 +1268,103 @@ export function isStepGateUnlocked(
     !step.requiresBoulderSocket ||
     state.boulderSocketUnlockedSteps.includes(step.stepNumber);
   return runesCleared && boulderCleared;
+}
+
+export function getStageProgressionBrief(
+  step: LevelStep,
+  state: PlayerState
+): StageProgressionBrief {
+  const phaseLabels: Record<StageProgressionPhase, string> = {
+    early_hook: 'EARLY HOOK · LEARN THE CLIMB',
+    rising_trial: 'SISYPHEAN TRIAL · ESCALATION',
+    rest_beat: 'SCENIC BREATHER · REST BEAT',
+    crucible_spike: 'CRUCIBLE SPIKE · HIGH TENSION',
+    boss_citadel: 'BOSS CITADEL · 10/10 GAUNTLET',
+    milestone_sanctuary: 'MILESTONE SANCTUARY · CHECKPOINT',
+  };
+
+  const checklist: StageProgressionChecklistItem[] = [];
+
+  if (step.stepNumber <= 0) {
+    checklist.push({
+      id: 'bridge',
+      label: 'Cross Cedar Bridge & Vault onto Stage 1',
+      completed: state.currentStep >= 1,
+    });
+    return {
+      stepNumber: 0,
+      progressionPhase: 'early_hook',
+      phaseBadge: phaseLabels.early_hook,
+      checklist,
+      readyToAdvance: true,
+    };
+  }
+
+  if (step.requiresBoulderSocket) {
+    const isSocketed = state.boulderSocketUnlockedSteps.includes(
+      step.stepNumber
+    );
+    checklist.push({
+      id: 'boulder',
+      label: isSocketed
+        ? 'Sisyphus Boulder Locked in Altar ✓'
+        : 'Push Sisyphus Stone Uphill into Altar Socket',
+      completed: isSocketed,
+    });
+  }
+
+  if (step.requiresSwitch && step.runePlates.length > 0) {
+    const litCount = step.runePlates.filter((rp) =>
+      state.activatedRuneIds.includes(rp.id)
+    ).length;
+    const allLit =
+      state.unlockedGateSteps.includes(step.stepNumber) ||
+      litCount >= step.runePlates.length;
+    const runeLabel =
+      step.puzzleType === 'ordered_runes'
+        ? `Strike Harmonic Runes in Order (${litCount}/${step.runePlates.length})`
+        : step.puzzleType === 'timed_runes'
+        ? `Beat ${step.runeTimeLimitSec}s Rune Relay (${litCount}/${step.runePlates.length})`
+        : `Activate Stage Rune Seals (${litCount}/${step.runePlates.length})`;
+    checklist.push({
+      id: 'runes',
+      label: allLit ? `${runeLabel} ✓` : runeLabel,
+      completed: allLit,
+    });
+  }
+
+  if (step.npc?.blocksPathByDefault) {
+    const npcCleared = state.clearedNpcSteps.includes(step.stepNumber);
+    checklist.push({
+      id: 'npc',
+      label: npcCleared
+        ? `${step.npc.name} Cleared Launch Lane ✓`
+        : `Confront ${step.npc.name} [E] to Clear Launch Lane`,
+      completed: npcCleared,
+    });
+  }
+
+  const gateUnlocked = isStepGateUnlocked(step, state);
+  const npcClear =
+    !step.npc?.blocksPathByDefault ||
+    state.clearedNpcSteps.includes(step.stepNumber);
+  const readyToAdvance = gateUnlocked && npcClear;
+
+  checklist.push({
+    id: 'vault',
+    label: readyToAdvance
+      ? `Charge [Space] & Vault to Stage ${Math.min(TOTAL_LEVELS, step.stepNumber + 1)}`
+      : 'Unlock Stage Seal Before Vaulting Ahead',
+    completed: false,
+  });
+
+  return {
+    stepNumber: step.stepNumber,
+    progressionPhase: step.progressionPhase,
+    phaseBadge: phaseLabels[step.progressionPhase] || phaseLabels.rising_trial,
+    checklist,
+    readyToAdvance,
+  };
 }
 
 /**
@@ -1262,8 +1384,32 @@ function enforceStageSolidObstacles(
 
   // Run 2 iterative resolution passes so corner wedges between two boulders never allow clipping
   for (let pass = 0; pass < 2; pass++) {
-    // Grounded walking collides solidly with all on-deck boulders, logs, totems & trees;
-    // when airborne (vaulting), only high pillars/walls above the player's feet or locked gates block flight.
+    // 1. Forward Planar Barrier for Locked Rune Gate (at 0.31 matching visual gateBarrierGroup)
+    // Holds the grounded player cleanly behind the front launch strip until unlocked,
+    // without ever trapping landing players or pushing them sideways off lateral edges!
+    if (
+      !isAirborne &&
+      plat.stepNumber === state.currentStep &&
+      !isStepGateUnlocked(plat, state)
+    ) {
+      const relX = state.x - platCenterX;
+      const relZ = state.z - platCenterZ;
+      const fwdProj = relX * plat.dirX + relZ * plat.dirZ;
+      const maxAllowedFwd = Math.min(plat.width, plat.depth) * 0.31;
+      if (fwdProj > maxAllowedFwd) {
+        const excess = fwdProj - maxAllowedFwd;
+        state.x -= plat.dirX * excess;
+        state.z -= plat.dirZ * excess;
+        const vFwd = state.vx * plat.dirX + state.vz * plat.dirZ;
+        if (vFwd > 0) {
+          state.vx -= vFwd * plat.dirX;
+          state.vz -= vFwd * plat.dirZ;
+        }
+        hitAny = true;
+      }
+    }
+
+    // 2. Grounded walking collides solidly with all on-deck boulders, logs, totems & trees
     if (!isAirborne) {
       for (const obs of plat.deckObstacles) {
         const resolved = resolveCircleAabbCollision(
@@ -1287,40 +1433,6 @@ function enforceStageSolidObstacles(
         }
       }
     }
-
-    // Oriented Bounding Box (OBB) Collision against Locked Rune Gate Barrier!
-    // Only enforce a stage's front launch-edge Rune Gate when the player is on or below that stage!
-    if (
-      plat.stepNumber <= state.currentStep &&
-      !isStepGateUnlocked(plat, state)
-    ) {
-      if (!isAirborne || (state.y >= plat.y - 0.15 && state.y <= plat.y + 1.18)) {
-        const gateCenterX = platCenterX + plat.dirX * (plat.width * 0.31);
-        const gateCenterZ = platCenterZ + plat.dirZ * (plat.depth * 0.31);
-        const resGate = resolveCircleObbCollision(
-          state.x,
-          state.z,
-          PLAYER_COLLISION_RADIUS,
-          gateCenterX,
-          gateCenterZ,
-          plat.dirX,
-          plat.dirZ,
-          0.18, // barrier thickness half-extent
-          plat.depth * 0.44 // barrier span across launch edge
-        );
-        if (resGate.collided) {
-          state.x = resGate.x;
-          state.z = resGate.z;
-          const vn = state.vx * resGate.normalX + state.vz * resGate.normalZ;
-          if (vn < 0) {
-            const bounce = isAirborne ? 1.45 : 1.0;
-            state.vx -= bounce * vn * resGate.normalX;
-            state.vz -= bounce * vn * resGate.normalZ;
-          }
-          hitAny = true;
-        }
-      }
-    }
   }
 
   return hitAny;
@@ -1331,7 +1443,8 @@ export function advancePlayerPhysics(
   simDt: number,
   elapsedTime: number,
   inputMoveX: number,
-  inputMoveZ: number
+  inputMoveZ: number,
+  inputSprint?: boolean
 ): StepPhysicsResult {
   const result: StepPhysicsResult = {
     landedStep: null,
@@ -1339,6 +1452,7 @@ export function advancePlayerPhysics(
     stepsLost: 0,
     knockedByHazard: false,
     bouncedOffLedge: false,
+    repulsedByLockedGate: false,
     triggeredGlitch: false,
     reachedSummit: false,
     activatedRunePlate: false,
@@ -1352,6 +1466,9 @@ export function advancePlayerPhysics(
   };
 
   if (state.won || simDt <= 0) return result;
+  if (typeof inputSprint === 'boolean') {
+    state.isSprinting = inputSprint;
+  }
 
   if (state.glitchTimer > 0) {
     state.glitchTimer = Math.max(0, state.glitchTimer - simDt);
@@ -1421,17 +1538,34 @@ export function advancePlayerPhysics(
       result.triggeredGlitch = true;
     }
 
-    if (
-      !state.isCharging &&
-      (Math.abs(effMoveX) > 0.01 || Math.abs(effMoveZ) > 0.01)
-    ) {
+    const hasMoveInput =
+      Math.abs(effMoveX) > 0.01 || Math.abs(effMoveZ) > 0.01;
+    const canSprint =
+      state.isSprinting && hasMoveInput && !state.isCharging && state.stamina > 3;
+    if (canSprint) {
+      state.stamina = Math.max(0, Number((state.stamina - 36 * simDt).toFixed(2)));
+    } else {
+      state.isSprinting = false;
+      state.stamina = Math.min(
+        100,
+        Number((state.stamina + 28 * simDt).toFixed(2))
+      );
+    }
+
+    if (hasMoveInput) {
       const riverSlowdown = state.inRiverWater ? 0.58 : 1.0;
-      const accel = (activeStepObj.friction < 0.35 ? 6.8 : 16.8) * riverSlowdown;
+      const chargeMoveScale = state.isCharging ? 0.45 : 1.0;
+      const sprintBoost = canSprint ? 1.48 : 1.0;
+      const accel =
+        (activeStepObj.friction < 0.35 ? 8.5 : 21.5) *
+        riverSlowdown *
+        chargeMoveScale *
+        sprintBoost;
       state.vx += effMoveX * GROUND_NUDGE_SPEED * accel * simDt;
       state.vz += effMoveZ * GROUND_NUDGE_SPEED * accel * simDt;
     }
 
-    const damping = Math.exp(-activeStepObj.friction * 9.0 * simDt);
+    const damping = Math.exp(-activeStepObj.friction * 9.5 * simDt);
     state.vx *= damping;
     state.vz *= damping;
 
@@ -1471,11 +1605,13 @@ export function advancePlayerPhysics(
       if (distB < pushRadius) {
         const nx = distB > 0.001 ? dxB / distB : activeStepObj.dirX;
         const nz = distB > 0.001 ? dzB / distB : activeStepObj.dirZ;
-        const pushSpeed = Math.max(
-          0.075,
-          (pushRadius - distB) * 1.08 +
-            Math.hypot(state.vx, state.vz) * simDt * 0.85
-        );
+        const sprintPushMult = canSprint ? 1.65 : 1.0;
+        const pushSpeed =
+          Math.max(
+            0.075,
+            (pushRadius - distB) * 1.08 +
+              Math.hypot(state.vx, state.vz) * simDt * 0.85
+          ) * sprintPushMult;
         state.puzzleBoulderRelX = Number(
           (state.puzzleBoulderRelX + nx * pushSpeed).toFixed(3)
         );
@@ -1541,6 +1677,8 @@ export function advancePlayerPhysics(
           state.activatedRuneIds = state.activatedRuneIds.filter(
             (id) => !stageRuneIds.has(id)
           );
+          state.stageFailStreak += 1;
+          state.rageScore = Math.min(100, state.rageScore + 6);
           result.resetRunesTimeout = true;
         }
       }
@@ -1566,6 +1704,10 @@ export function advancePlayerPhysics(
                 state.activatedRuneIds = state.activatedRuneIds.filter(
                   (id) => !stageRuneIds.has(id)
                 );
+                state.stageFailStreak += 1;
+                state.rageScore = Math.min(100, state.rageScore + 6);
+                state.vx -= activeStepObj.dirX * 2.2;
+                state.vz -= activeStepObj.dirZ * 2.2;
                 result.resetRunesWrongOrder = true;
                 break;
               }
@@ -1586,6 +1728,15 @@ export function advancePlayerPhysics(
         state.unlockedGateSteps.push(activeStepObj.stepNumber);
         state.runePuzzleTimer = 0;
         result.unlockedTrailGate = true;
+        // Orient player toward the next stage as soon as the trail gate unlocks!
+        const nextTarget =
+          LEVELS_500[Math.min(TOTAL_LEVELS - 1, activeStepObj.stepNumber)];
+        if (nextTarget) {
+          state.aimAngle = Math.atan2(
+            nextTarget.z - state.z,
+            nextTarget.x - state.x
+          );
+        }
       }
     }
 
@@ -1791,43 +1942,46 @@ export function advancePlayerPhysics(
         relX = state.x - platCenterX;
         relZ = state.z - platCenterZ;
 
-        // Unassisted movement heading: walking on a stage turns the character along their actual
-        // movement direction (ZERO auto-aim magnetism toward the next stage!)
+        // Smoothly orient aimAngle along movement while gently assisting toward the next stage
+        // when walking forward on the terrace so the player is ready to jump
+        const nextStepObj =
+          LEVELS_500[Math.min(TOTAL_LEVELS - 1, state.currentStep)];
         if (
           !state.isCharging &&
           (Math.abs(effMoveX) > 0.05 || Math.abs(effMoveZ) > 0.05)
         ) {
           const moveAngle = Math.atan2(effMoveZ, effMoveX);
+          let desiredAngle = moveAngle;
+          if (nextStepObj) {
+            const toNextAngle = Math.atan2(
+              nextStepObj.z - state.z,
+              nextStepObj.x - state.x
+            );
+            const diffToNext = Math.atan2(
+              Math.sin(toNextAngle - moveAngle),
+              Math.cos(toNextAngle - moveAngle)
+            );
+            if (Math.abs(diffToNext) < 1.05) {
+              desiredAngle = moveAngle + diffToNext * 0.45;
+            }
+          }
           const angleDiff = Math.atan2(
-            Math.sin(moveAngle - state.aimAngle),
-            Math.cos(moveAngle - state.aimAngle)
+            Math.sin(desiredAngle - state.aimAngle),
+            Math.cos(desiredAngle - state.aimAngle)
           );
-          state.aimAngle += angleDiff * Math.min(1, simDt * 9.0);
-        }
-
-        // Overcharge muscle-fatigue tremor when holding jump charge too long
-        if (state.isCharging && state.chargeHoldTime > 1.05) {
-          state.aimAngle += Math.sin(elapsedTime * 36.0) * 0.015;
+          state.aimAngle += angleDiff * Math.min(1, simDt * 11.0);
         }
 
         const normEdgeX = Math.abs(relX) / Math.max(0.1, halfW);
         const normEdgeZ = Math.abs(relZ) / Math.max(0.1, halfD);
         state.teeterAmount = Math.max(
           0,
-          Math.min(1, (Math.max(normEdgeX, normEdgeZ) - 0.65) / 0.35)
+          Math.min(1, (Math.max(normEdgeX, normEdgeZ) - 0.72) / 0.28)
         );
-
-        // Rim gravity slip: lingering on the outer 16% brink pulls boots outward toward the drop-off!
-        if (normEdgeX > 0.84) {
-          state.vx += Math.sign(relX) * 1.45 * simDt;
-        }
-        if (normEdgeZ > 0.84) {
-          state.vz += Math.sign(relZ) * 1.45 * simDt;
-        }
 
         const newRelX = Math.abs(state.x - platCenterX);
         const newRelZ = Math.abs(state.z - platCenterZ);
-        if (newRelX > halfW + 0.06 || newRelZ > halfD + 0.06) {
+        if (newRelX > halfW + 0.12 || newRelZ > halfD + 0.12) {
           state.grounded = false;
           state.isTumbling = true;
         } else {
@@ -1907,14 +2061,12 @@ export function advancePlayerPhysics(
 
       const cx = plat.x + rt.offsetX;
       const cz = plat.z + rt.offsetZ;
-      const halfW = plat.width * 0.5 + 0.04;
-      const halfD = plat.depth * 0.5 + 0.04;
+      const halfW = plat.width * 0.5;
+      const halfD = plat.depth * 0.5;
       const topY = plat.y;
       const bottomY = plat.y - plat.height;
 
-      // 2. Mid-Air Collision against On-Deck Boulders, Totems, Trees & Locked Rune Gates!
-      // When descending onto a higher stage (plat.stepNumber > state.currentStep && state.vy <= 0),
-      // let Top Surface Touchdown land the player on the deck and slide them cleanly outside any obstacle.
+      // 2. Mid-Air Collision against On-Deck Boulders, Totems & Trees
       if (
         (plat.stepNumber <= state.currentStep || state.vy > 0) &&
         state.y >= topY - 0.12 &&
@@ -1937,12 +2089,38 @@ export function advancePlayerPhysics(
         }
       }
 
-      // 3. Top Surface Touchdown Check
-      if (state.vy <= 0.5 && prevY >= topY - 0.38 && state.y <= topY + 0.24) {
+      // 3. Top Surface Touchdown Check (with foot-radius rim tolerance so landing on edges feels crisp and fair)
+      const landHalfW = halfW + 0.14;
+      const landHalfD = halfD + 0.14;
+      if (state.vy <= 0.65 && prevY >= topY - 0.52 && state.y <= topY + 0.32) {
         if (
-          Math.abs(state.x - cx) <= halfW &&
-          Math.abs(state.z - cz) <= halfD
+          Math.abs(state.x - cx) <= landHalfW &&
+          Math.abs(state.z - cz) <= landHalfD
         ) {
+          // 3a. TARTARUS PROGRESSION SEAL REPULSION:
+          // If the player tries to leap onto a higher stage (plat.stepNumber > state.currentStep)
+          // while the current stage's puzzle gate is still LOCKED or a Blocker NPC is uncleared,
+          // the higher stage's Tartarus Seal zaps and repels them backward!
+          const departureNpcBlocked =
+            state.currentStep > 0 &&
+            Boolean(activeStepObj.npc?.blocksPathByDefault) &&
+            !state.clearedNpcSteps.includes(state.currentStep);
+          if (
+            plat.stepNumber > state.currentStep &&
+            state.currentStep > 0 &&
+            (!isStepGateUnlocked(activeStepObj, state) || departureNpcBlocked)
+          ) {
+            state.vy = 3.5;
+            state.vx = -activeStepObj.dirX * 5.2;
+            state.vz = -activeStepObj.dirZ * 5.2;
+            state.isTumbling = true;
+            state.stageFailStreak += 1;
+            state.rageScore = Math.min(100, state.rageScore + 8);
+            result.repulsedByLockedGate = true;
+            result.bouncedOffLedge = true;
+            break;
+          }
+
           if (
             plat.hazard === 'bouncer' &&
             (Math.abs(state.x - cx) > halfW * 0.78 ||
@@ -1952,14 +2130,15 @@ export function advancePlayerPhysics(
             state.vx += Math.sign(state.x - cx || 1) * 3.5;
             state.vz += Math.sign(state.z - cz || 1) * 3.5;
             state.isTumbling = true;
+            state.stageFailStreak += 1;
             result.knockedByHazard = true;
             break;
           }
 
           state.y = topY;
           state.vy = 0;
-          // Preserve realistic landing momentum slide across both X and Z axes!
-          const landingSlide = plat.friction < 0.35 ? 0.82 : 0.36;
+          // Crisp touchdown traction on normal grass/stone, slippery slide on ice
+          const landingSlide = plat.friction < 0.35 ? 0.68 : 0.12;
           state.vx *= landingSlide;
           state.vz *= landingSlide;
           state.grounded = true;
@@ -1967,8 +2146,12 @@ export function advancePlayerPhysics(
           state.tumbleSpin = 0;
           state.crumbleTimer = 0;
 
-          // Ensure player is cleanly outside any on-deck obstacle or locked gate upon touchdown
+          // Keep touchdown position safely inside the deck rim before and after obstacle resolution
+          state.x = Math.max(cx - halfW * 0.9, Math.min(cx + halfW * 0.9, state.x));
+          state.z = Math.max(cz - halfD * 0.9, Math.min(cz + halfD * 0.9, state.z));
           enforceStageSolidObstacles(plat, cx, cz, state, false);
+          state.x = Math.max(cx - halfW * 0.92, Math.min(cx + halfW * 0.92, state.x));
+          state.z = Math.max(cz - halfD * 0.92, Math.min(cz + halfD * 0.92, state.z));
 
           const prevBand = Math.floor(
             state.currentStep / CAMERA_SHIFT_INTERVAL_STEPS
@@ -1980,14 +2163,29 @@ export function advancePlayerPhysics(
             result.cameraShiftedTo = getAutoCameraModeForStep(plat.stepNumber);
           }
 
+          const prevStepNum = state.currentStep;
           const lost = Math.max(0, state.lastStableStep - plat.stepNumber);
           if (plat.stepNumber > state.peakStep) {
             state.peakStep = plat.stepNumber;
           }
+          if (plat.stepNumber > prevStepNum) {
+            state.stageFailStreak = 0;
+          }
           state.currentStep = plat.stepNumber;
+
+          // Automatically orient aimAngle toward the next stage upon landing so the player is ready to climb!
+          const nextTarget =
+            LEVELS_500[Math.min(TOTAL_LEVELS - 1, plat.stepNumber)];
+          if (nextTarget && plat.stepNumber < TOTAL_LEVELS) {
+            state.aimAngle = Math.atan2(
+              nextTarget.z - state.z,
+              nextTarget.x - state.x
+            );
+          }
 
           if (lost >= 1) {
             state.fallsCount += 1;
+            state.stageFailStreak += 1;
             if (lost > state.biggestFallLoss) {
               state.biggestFallLoss = lost;
             }
@@ -2017,24 +2215,28 @@ export function advancePlayerPhysics(
         }
       }
 
-      // 4. Side-Wall Physical Bounce (Using exact Circle-vs-AABB resolution so no clipping into slab walls!)
-      if (state.y < topY - 0.34 && state.y > bottomY) {
+      // 4. Side-Wall Physical Bounce (Only when well below the top rim & descending/colliding with lower cliff core)
+      if (
+        state.y < topY - 0.55 &&
+        state.y > bottomY &&
+        !(plat.stepNumber > state.currentStep && state.vy > 0)
+      ) {
         const resWall = resolveCircleAabbCollision(
           state.x,
           state.z,
           PLAYER_COLLISION_RADIUS,
           cx,
           cz,
-          plat.width * 0.5,
-          plat.depth * 0.5
+          plat.width * 0.44,
+          plat.depth * 0.44
         );
         if (resWall.collided) {
           state.x = resWall.x;
           state.z = resWall.z;
           const vn = state.vx * resWall.normalX + state.vz * resWall.normalZ;
           if (vn < 0) {
-            state.vx -= 1.45 * vn * resWall.normalX;
-            state.vz -= 1.45 * vn * resWall.normalZ;
+            state.vx -= 1.35 * vn * resWall.normalX;
+            state.vz -= 1.35 * vn * resWall.normalZ;
           }
           state.isTumbling = true;
           result.bouncedOffLedge = true;
@@ -2129,6 +2331,7 @@ export function advancePlayerPhysics(
 
       if (lost >= 1) {
         state.fallsCount += 1;
+        state.stageFailStreak += 1;
         if (lost > state.biggestFallLoss) {
           state.biggestFallLoss = lost;
         }

@@ -34,6 +34,7 @@ import {
   GhostTrajectoryRun,
   LiveWindState,
   PlayerState,
+  StageProgressionBrief,
   advanceChargeState,
   advancePlayerPhysics,
   applyControllerDeadzone,
@@ -57,6 +58,7 @@ import {
   getAutoCameraModeForStep,
   getBiomeWeatherProfile,
   getLiveWindVector,
+  getStageProgressionBrief,
   getStepRuntimeOffset,
   isStepGateUnlocked,
   recordPlayerGhostRun,
@@ -176,6 +178,10 @@ export interface TelemetryPayload {
   activeRuneCount: number;
   totalRuneCount: number;
   stepGateUnlocked: boolean;
+  stamina: number;
+  isSprinting: boolean;
+  stageFailStreak: number;
+  progressionBrief: StageProgressionBrief;
   cameraMode: CameraAngleMode;
   nextCameraShiftStep: number;
 }
@@ -257,6 +263,7 @@ interface StepMeshEntry {
   gateBarrierGroup?: THREE.Group;
   gateEnergyMesh?: THREE.Mesh;
   gateEnergyMat?: THREE.MeshStandardMaterial;
+  conduitMats?: THREE.MeshStandardMaterial[];
   runeVisuals: RuneVisualEntry[];
   npcGroup?: THREE.Group;
   npcHeadGroup?: THREE.Group;
@@ -393,21 +400,37 @@ function enhanceWithStylizedShader(
   return material;
 }
 
-function createProceduralSurfaceTextures(): {
+function createProceduralSurfaceTextures(maxAnisotropy = 4): {
   stoneBump: THREE.CanvasTexture;
   woodGrain: THREE.CanvasTexture;
   contactShadowTex: THREE.CanvasTexture;
 } {
-  // Smooth neutral stone micro-relief without random 3x3 dot speckles
+  // Stratified sedimentary granite & carved ashlar micro-relief (smooth continuous strata waves, zero speckle dots)
   const stoneCanvas = document.createElement('canvas');
-  stoneCanvas.width = 64;
-  stoneCanvas.height = 64;
+  stoneCanvas.width = 128;
+  stoneCanvas.height = 128;
   const sCtx = stoneCanvas.getContext('2d')!;
   sCtx.fillStyle = '#808080';
-  sCtx.fillRect(0, 0, 64, 64);
+  sCtx.fillRect(0, 0, 128, 128);
+  for (let y = 0; y < 128; y += 2) {
+    const strata = Math.round(
+      128 +
+        Math.sin((y / 128) * Math.PI * 6) * 14 +
+        Math.cos((y / 128) * Math.PI * 14) * 6
+    );
+    sCtx.fillStyle = `rgb(${strata},${strata},${strata})`;
+    sCtx.fillRect(0, y, 128, 2);
+  }
+  // Subtle carved bevel seams every 32px
+  sCtx.fillStyle = 'rgba(68, 68, 68, 0.45)';
+  for (let y = 16; y < 128; y += 32) {
+    sCtx.fillRect(0, y, 128, 2);
+  }
   const stoneBump = new THREE.CanvasTexture(stoneCanvas);
   stoneBump.wrapS = THREE.RepeatWrapping;
   stoneBump.wrapT = THREE.RepeatWrapping;
+  stoneBump.repeat.set(2, 2);
+  stoneBump.anisotropy = maxAnisotropy;
 
   const woodCanvas = document.createElement('canvas');
   woodCanvas.width = 128;
@@ -415,8 +438,10 @@ function createProceduralSurfaceTextures(): {
   const wCtx = woodCanvas.getContext('2d')!;
   wCtx.fillStyle = '#7e7e7e';
   wCtx.fillRect(0, 0, 128, 128);
-  for (let y = 0; y < 128; y += 4) {
-    const wave = Math.round(122 + Math.sin(y * 0.2) * 8);
+  for (let y = 0; y < 128; y += 3) {
+    const wave = Math.round(
+      124 + Math.sin(y * 0.22) * 11 + Math.cos(y * 0.09) * 5
+    );
     wCtx.fillStyle = `rgb(${wave},${wave},${wave})`;
     wCtx.fillRect(0, y, 128, 2);
   }
@@ -424,6 +449,7 @@ function createProceduralSurfaceTextures(): {
   woodGrain.wrapS = THREE.RepeatWrapping;
   woodGrain.wrapT = THREE.RepeatWrapping;
   woodGrain.repeat.set(1, 2);
+  woodGrain.anisotropy = maxAnisotropy;
 
   // Soft Radial Ground Contact Shadow Texture
   const shadowCanvas = document.createElement('canvas');
@@ -431,8 +457,8 @@ function createProceduralSurfaceTextures(): {
   shadowCanvas.height = 128;
   const shCtx = shadowCanvas.getContext('2d')!;
   const grad = shCtx.createRadialGradient(64, 64, 6, 64, 64, 60);
-  grad.addColorStop(0.0, 'rgba(10, 6, 18, 0.72)');
-  grad.addColorStop(0.48, 'rgba(14, 10, 26, 0.36)');
+  grad.addColorStop(0.0, 'rgba(10, 6, 18, 0.76)');
+  grad.addColorStop(0.48, 'rgba(14, 10, 26, 0.38)');
   grad.addColorStop(1.0, 'rgba(14, 10, 26, 0.0)');
   shCtx.fillStyle = grad;
   shCtx.fillRect(0, 0, 128, 128);
@@ -479,11 +505,13 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
     right: boolean;
     up: boolean;
     down: boolean;
+    sprint: boolean;
   }>({
     left: false,
     right: false,
     up: false,
     down: false,
+    sprint: false,
   });
 
   const outfitMaterialsRef = useRef<{
@@ -648,11 +676,24 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
 
     const aspect = container.clientWidth / Math.max(1, container.clientHeight);
     const frustumSize = 14.2;
+    const computeResponsiveVertFrustum = (asp: number) => {
+      // Ensure narrow portrait phones (asp ~ 0.45), foldable cover screens (asp ~ 0.40),
+      // and square unfolded foldables (asp ~ 0.85-1.10) maintain a wide enough horizontal
+      // world span (at least 16.2 world units) so both current and next stages remain framed!
+      if (asp < 1.12) {
+        return Math.max(frustumSize, 16.2 / Math.max(0.38, asp));
+      }
+      if (asp > 2.05) {
+        return frustumSize * 1.08;
+      }
+      return frustumSize;
+    };
+    const initVertFrustum = computeResponsiveVertFrustum(aspect);
     const camera = new THREE.OrthographicCamera(
-      (-frustumSize * aspect) / 2,
-      (frustumSize * aspect) / 2,
-      frustumSize / 2,
-      -frustumSize / 2,
+      (-initVertFrustum * aspect) / 2,
+      (initVertFrustum * aspect) / 2,
+      initVertFrustum / 2,
+      -initVertFrustum / 2,
       -140,
       680
     );
@@ -703,7 +744,9 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
     }
 
     const { stoneBump, woodGrain, contactShadowTex } =
-      createProceduralSurfaceTextures();
+      createProceduralSurfaceTextures(
+        renderer.capabilities.getMaxAnisotropy() || 4
+      );
 
     const makeContactShadow = (
       radiusX: number,
@@ -2496,8 +2539,7 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
       chev2.scale.setScalar(0.76);
       chev2.position.set(0.18, 0.02, 0);
       launchCompassGroup.add(chev1, chev2);
-      // Only show the directional launch compass on Stage 1; on Stages 2..500 the player must read the 3D mountain spiral themselves!
-      launchCompassGroup.visible = step.stepNumber <= 1;
+      launchCompassGroup.visible = step.stepNumber < TOTAL_LEVELS;
       group.add(launchCompassGroup);
 
       // ============================================================================
@@ -2649,8 +2691,9 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
         }
       }
 
-      // Multi-Plate Rune Puzzle Nodes, Sisyphus Boulder Altar Socket & Physical Front Launch Gate
+      // Multi-Plate Rune Puzzle Nodes, Sisyphus Boulder Altar Socket, Glowing Rune Conduits & Physical Front Launch Gate
       const runeVisuals: RuneVisualEntry[] = [];
+      const conduitMats: THREE.MeshStandardMaterial[] = [];
       let gateBarrierGroup: THREE.Group | undefined;
       let gateEnergyMesh: THREE.Mesh | undefined;
       let gateEnergyMat: THREE.MeshStandardMaterial | undefined;
@@ -2658,7 +2701,36 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
       let boulderSocketGroup: THREE.Group | undefined;
       let boulderSocketRingMat: THREE.MeshStandardMaterial | undefined;
 
+      const gateCenterRelX = step.dirX * (step.width * 0.31);
+      const gateCenterRelZ = step.dirZ * (step.depth * 0.31);
+
+      const addRuneConduitLine = (fromX: number, fromZ: number) => {
+        const dxC = gateCenterRelX - fromX;
+        const dzC = gateCenterRelZ - fromZ;
+        const len = Math.hypot(dxC, dzC);
+        if (len < 0.25) return;
+        const cMat = new THREE.MeshStandardMaterial({
+          color: 0xf59e0b,
+          emissive: 0xd97706,
+          emissiveIntensity: 0.9,
+          roughness: 0.25,
+        });
+        const conduitMesh = new THREE.Mesh(
+          new THREE.BoxGeometry(len, 0.022, 0.065),
+          cMat
+        );
+        conduitMesh.position.set(
+          (fromX + gateCenterRelX) * 0.5,
+          0.022,
+          (fromZ + gateCenterRelZ) * 0.5
+        );
+        conduitMesh.rotation.y = -Math.atan2(dzC, dxC);
+        group.add(conduitMesh);
+        conduitMats.push(cMat);
+      };
+
       if (step.requiresBoulderSocket) {
+        addRuneConduitLine(step.boulderSocketRelX, step.boulderSocketRelZ);
         boulderSocketGroup = new THREE.Group();
         boulderSocketGroup.position.set(
           step.boulderSocketRelX,
@@ -2711,6 +2783,7 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
 
       if (step.requiresSwitch && step.runePlates.length > 0) {
         for (const rp of step.runePlates) {
+          addRuneConduitLine(rp.relX, rp.relZ);
           const ringMat = new THREE.MeshStandardMaterial({
             color: 0xf59e0b,
             emissive: 0xd97706,
@@ -2744,8 +2817,6 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
 
         // Physical Launch Gate Barrier across the front launch edge (Matches OBB in rules.ts!)
         gateBarrierGroup = new THREE.Group();
-        const gateCenterRelX = step.dirX * (step.width * 0.31);
-        const gateCenterRelZ = step.dirZ * (step.depth * 0.31);
         gateBarrierGroup.position.set(gateCenterRelX, 0, gateCenterRelZ);
         gateBarrierGroup.rotation.y = -Math.atan2(step.dirZ, step.dirX);
 
@@ -2898,6 +2969,7 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
         gateBarrierGroup,
         gateEnergyMesh,
         gateEnergyMat,
+        conduitMats,
         runeVisuals,
         npcGroup,
         npcHeadGroup,
@@ -3284,7 +3356,7 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
       });
     }
 
-    // Active Jump Trajectory Recording State + Camera Trauma State
+    // Active Jump Trajectory Recording State + Camera Trauma & Hitstop State
     let isRecordingJump = false;
     let jumpStartStep = 0;
     let jumpStartElapsed = 0;
@@ -3296,8 +3368,17 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
     onGhostRunsChangeRef.current?.(ghostRunsRef.current);
 
     // ============================================================================
-    // INPUT LISTENERS (Pure Jumping + Camera-Relative Steering + NPC POV Talk [E])
+    // INPUT LISTENERS (Pure Jumping + Camera-Relative Steering + Sprint Burst + NPC POV Talk [E])
     // ============================================================================
+    const alignAimToNextStage = () => {
+      const p = playerRef.current;
+      const nextIdx = Math.max(0, Math.min(TOTAL_LEVELS - 1, p.currentStep));
+      const nextSt = LEVELS_500[nextIdx] || LEVELS_500[0];
+      if (nextSt) {
+        p.aimAngle = Math.atan2(nextSt.z - p.z, nextSt.x - p.x);
+      }
+    };
+
     const beginCharge = () => {
       if (
         isTitlePreviewRef.current ||
@@ -3310,9 +3391,24 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
       if (p.grounded || p.coyoteTimer > 0) {
         if (!p.isCharging) {
           p.isCharging = true;
-          p.chargeRatio = 0.08;
+          p.chargeRatio = 0.2;
           p.chargeDirection = 1;
           p.chargeHoldTime = 0;
+
+          // If the player was facing backward after solving runes/boulders on the deck,
+          // orient their jump aim toward the next stage when starting a jump!
+          const nextIdx = Math.max(0, Math.min(TOTAL_LEVELS - 1, p.currentStep));
+          const nextSt = LEVELS_500[nextIdx] || LEVELS_500[0];
+          if (nextSt) {
+            const toNext = Math.atan2(nextSt.z - p.z, nextSt.x - p.x);
+            const diff = Math.atan2(
+              Math.sin(toNext - p.aimAngle),
+              Math.cos(toNext - p.aimAngle)
+            );
+            if (Math.abs(diff) > 0.65 || elapsedTime - lastMouseAimTime > 0.4) {
+              p.aimAngle = toNext;
+            }
+          }
           soundEngine.playChargeTick(0.1);
         }
       } else {
@@ -3327,11 +3423,53 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
       p.isCharging = false;
 
       if (p.grounded || p.coyoteTimer > 0) {
-        const ratio = Math.max(0.12, p.chargeRatio);
-        const vel = computeJumpVelocity(ratio, p.aimAngle);
-        p.vx = vel.vx;
-        p.vy = vel.vy;
-        p.vz = vel.vz;
+        const curStepForJump =
+          p.currentStep <= 0
+            ? GROUND_STEP_META
+            : LEVELS_500[
+                Math.max(0, Math.min(TOTAL_LEVELS - 1, p.currentStep - 1))
+              ];
+        const gateCurrentlyLocked =
+          p.currentStep > 0 && !isStepGateUnlocked(curStepForJump, p);
+        const wasLockedStageHazardHop =
+          gateCurrentlyLocked && p.chargeHoldTime < 0.16;
+
+        let ratio = Math.max(0.22, p.chargeRatio);
+        let launchAngle = p.aimAngle;
+
+        if (wasLockedStageHazardHop) {
+          // Agile On-Deck Hazard Hop while solving a locked stage:
+          // tapping Space (<0.16s) before the gate is unlocked hops vertically over sweeper beams & boulders!
+          p.vx *= 0.55;
+          p.vz *= 0.55;
+          p.vy = 5.85;
+        } else {
+          // Ballistic Stage-to-Stage Vault:
+          // Assist heading toward next stage and reward release timing inside the green sweet-spot window!
+          const ideal = computeIdealJumpToNextStep(p.currentStep, elapsedTime, {
+            x: p.x,
+            y: p.y,
+            z: p.z,
+          });
+          const angleDiff = Math.atan2(
+            Math.sin(ideal.aimAngle - launchAngle),
+            Math.cos(ideal.aimAngle - launchAngle)
+          );
+          if (Math.abs(angleDiff) < 0.85) {
+            launchAngle += angleDiff * 0.68;
+          }
+          // Sweet-spot ballistic assist when the player releases near the green target charge window
+          const chargeError = Math.abs(ratio - ideal.chargeRatio);
+          if (chargeError <= 0.22) {
+            ratio = ratio * 0.42 + ideal.chargeRatio * 0.58;
+          }
+          p.aimAngle = launchAngle;
+
+          const vel = computeJumpVelocity(ratio, launchAngle);
+          p.vx = vel.vx;
+          p.vy = vel.vy;
+          p.vz = vel.vz;
+        }
         p.grounded = false;
         p.coyoteTimer = 0;
         p.chargeRatio = 0;
@@ -3349,10 +3487,15 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
         keysRef.current.right = true;
       if (code === 'ArrowUp' || code === 'KeyW') keysRef.current.up = true;
       if (code === 'ArrowDown' || code === 'KeyS') keysRef.current.down = true;
+      if (code === 'ShiftLeft' || code === 'ShiftRight')
+        keysRef.current.sprint = true;
 
       if (code === 'Space') {
         e.preventDefault();
         beginCharge();
+      } else if (code === 'KeyF') {
+        e.preventDefault();
+        alignAimToNextStage();
       } else if (code === 'KeyE') {
         e.preventDefault();
         const p = playerRef.current;
@@ -3370,12 +3513,21 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
         keysRef.current.right = false;
       if (code === 'ArrowUp' || code === 'KeyW') keysRef.current.up = false;
       if (code === 'ArrowDown' || code === 'KeyS') keysRef.current.down = false;
+      if (code === 'ShiftLeft' || code === 'ShiftRight')
+        keysRef.current.sprint = false;
 
       if (code === 'Space') {
         e.preventDefault();
         releaseJump();
       }
     };
+
+    // Virtual Touch Thumbstick & Mobile Action State
+    let touchStickX = 0;
+    let touchStickZ = 0;
+    let touchSprinting = false;
+    let pinchStartDist = 0;
+    let pinchStartZoom = 1.0;
 
     const handlePointerDown = (e: PointerEvent) => {
       if (
@@ -3384,6 +3536,16 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
         activeDialogueNpcRef.current
       )
         return;
+      if (e.button === 2) {
+        e.preventDefault();
+        alignAimToNextStage();
+        return;
+      }
+      // On touch devices, dedicated Virtual Touch Controls handle jumping & movement,
+      // while touching/dragging the 3D canvas aims the trajectory reticle!
+      if (e.pointerType === 'touch') {
+        return;
+      }
       if (e.button !== 0) return;
       beginCharge();
     };
@@ -3500,6 +3662,28 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
       );
     };
 
+    const handleTouchStart = (e: TouchEvent) => {
+      if (e.touches.length === 2) {
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        pinchStartDist = Math.hypot(dx, dy);
+        pinchStartZoom = zoomFactorRef.current;
+      }
+    };
+
+    const handleTouchMove = (e: TouchEvent) => {
+      if (e.touches.length === 2 && pinchStartDist > 12) {
+        e.preventDefault();
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        const dist = Math.hypot(dx, dy);
+        const ratio = dist / pinchStartDist;
+        const nextZoom = clampCameraZoomFactor(pinchStartZoom * ratio);
+        zoomFactorRef.current = nextZoom;
+        onZoomChangeRef.current?.(nextZoom);
+      }
+    };
+
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('keyup', handleKeyUp);
     window.addEventListener('pointermove', handlePointerMove);
@@ -3508,32 +3692,70 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
     const domElem = renderer.domElement;
     domElem.addEventListener('pointerdown', handlePointerDown);
     domElem.addEventListener('wheel', handleWheel, { passive: false });
+    domElem.addEventListener('touchstart', handleTouchStart, { passive: true });
+    domElem.addEventListener('touchmove', handleTouchMove, { passive: false });
     window.addEventListener('pointerup', handlePointerUp);
 
     const handleResize = () => {
       if (!container) return;
-      const w = container.clientWidth;
+      const w = Math.max(1, container.clientWidth);
       const h = Math.max(1, container.clientHeight);
       const asp = w / h;
-      camera.left = (-frustumSize * asp) / 2;
-      camera.right = (frustumSize * asp) / 2;
-      camera.top = frustumSize / 2;
-      camera.bottom = -frustumSize / 2;
+      const vertFrustum = computeResponsiveVertFrustum(asp);
+      camera.left = (-vertFrustum * asp) / 2;
+      camera.right = (vertFrustum * asp) / 2;
+      camera.top = vertFrustum / 2;
+      camera.bottom = -vertFrustum / 2;
       camera.updateProjectionMatrix();
       renderer.setSize(w, h);
       if (composer) composer.setSize(w, h);
     };
     window.addEventListener('resize', handleResize);
+    window.visualViewport?.addEventListener('resize', handleResize);
+    const resizeObserver =
+      typeof ResizeObserver !== 'undefined'
+        ? new ResizeObserver(() => handleResize())
+        : null;
+    resizeObserver?.observe(container);
 
     // Track previous gamepad button states for edge-triggered actions
     let prevGpJumpHeld = false;
     let prevGpButtons: boolean[] = [];
+
+    // Expose Mobile & Foldable Virtual Touch Controls Bridge
+    const touchControlsBridge = {
+      setJoystick: (x: number, z: number, sprint = false) => {
+        touchStickX = Math.max(-1, Math.min(1, x));
+        touchStickZ = Math.max(-1, Math.min(1, z));
+        touchSprinting = sprint;
+      },
+      setSprint: (active: boolean) => {
+        touchSprinting = active;
+      },
+      beginJump: () => {
+        beginCharge();
+      },
+      releaseJump: () => {
+        releaseJump();
+      },
+      snapAim: () => {
+        alignAimToNextStage();
+      },
+    };
+    (window as unknown as Record<string, unknown>).__hawkTouchControls =
+      touchControlsBridge;
 
     // ============================================================================
     // QA DETERMINISTIC TEST HOOKS (window.__gameTestHooks & window.advanceTime)
     // ============================================================================
     (window as unknown as Record<string, unknown>).__gameTestHooks = {
       getState: () => ({ ...playerRef.current }),
+      setTouchJoystick: (x: number, z: number, sprint = false) => {
+        touchControlsBridge.setJoystick(x, z, sprint);
+      },
+      beginTouchJump: () => touchControlsBridge.beginJump(),
+      releaseTouchJump: () => touchControlsBridge.releaseJump(),
+      snapAimToNextStage: () => touchControlsBridge.snapAim(),
       setMouseAimAngle: (angleRad: number) => {
         mouseAimAngle = angleRad;
         lastMouseAimTime = elapsedTime;
@@ -3771,6 +3993,7 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
       if (isPausedRef.current) return;
       elapsedTime += dt;
       const p = playerRef.current;
+      p.isSprinting = Boolean(keysRef.current.sprint || touchSprinting);
 
       if (isTitlePreviewRef.current) {
         p.x = GROUND_SPAWN_X;
@@ -3792,8 +4015,8 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
               Math.max(0, Math.min(TOTAL_LEVELS - 1, p.currentStep - 1))
             ];
 
-      let rawInX = gpMoveX;
-      let rawInZ = gpMoveZ;
+      let rawInX = gpMoveX + touchStickX;
+      let rawInZ = gpMoveZ + touchStickZ;
       if (keysRef.current.left) rawInX -= 1;
       if (keysRef.current.right) rawInX += 1;
       if (keysRef.current.up) rawInZ -= 1;
@@ -3822,10 +4045,12 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
         lastManualAimTime = elapsedTime;
       }
 
-      // Mouse Cursor Jump Direction Aiming (smoothly tracks mouse cursor when moved)
+      // Mouse Cursor Jump Direction Aiming (only when keyboard movement is not actively steering)
+      const hasKeyboardOrStickMove = rawInX !== 0 || rawInZ !== 0;
       const mouseMovedRecently =
         controlSettingsRef.current.mouseAimEnabled &&
-        elapsedTime - lastMouseAimTime < 0.35;
+        !hasKeyboardOrStickMove &&
+        elapsedTime - lastMouseAimTime < 0.25;
       if (mouseMovedRecently) {
         const diffMouse = Math.atan2(
           Math.sin(mouseAimAngle - p.aimAngle),
@@ -3835,37 +4060,14 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
           diffMouse *
           Math.min(
             1,
-            dt * 20 * controlSettingsRef.current.mouseAimSensitivity
+            dt * 18 * controlSettingsRef.current.mouseAimSensitivity
           );
       }
 
       let worldMoveX = 0;
       let worldMoveZ = 0;
 
-      if (p.isCharging) {
-        if (rawInX !== 0 && !mouseMovedRecently && gpRightMag <= 0.05) {
-          p.aimAngle +=
-            rawInX *
-            1.85 *
-            controlSettingsRef.current.controllerAimSensitivity *
-            dt;
-          lastManualAimTime = elapsedTime;
-        }
-        const chargeStep = advanceChargeState(
-          p.chargeRatio,
-          p.chargeDirection,
-          p.chargeHoldTime,
-          dt,
-          curStepObj.chargeSpeedMultiplier
-        );
-        p.chargeRatio = chargeStep.chargeRatio;
-        p.chargeDirection = chargeStep.chargeDirection;
-        p.chargeHoldTime = chargeStep.chargeHoldTime;
-
-        if (chargeStep.overcharged) {
-          releaseJump();
-        }
-      } else if (rawInX !== 0 || rawInZ !== 0) {
+      if (rawInX !== 0 || rawInZ !== 0) {
         const preset = computeSpiralCameraOffset(
           p.currentStep,
           p.x,
@@ -3884,11 +4086,10 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
         if (mLen > 0.001) {
           worldMoveX /= mLen;
           worldMoveZ /= mLen;
-          // Update aim from movement unless the user is simultaneously aiming with the mouse or right stick
           if (!mouseMovedRecently && gpRightMag <= 0.05) {
             if (!p.grounded) {
               p.aimAngle = Math.atan2(worldMoveZ, worldMoveX);
-            } else {
+            } else if (!p.isCharging) {
               const walkAngle = Math.atan2(worldMoveZ, worldMoveX);
               const diff = Math.atan2(
                 Math.sin(walkAngle - p.aimAngle),
@@ -3897,6 +4098,31 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
               p.aimAngle += diff * Math.min(1, dt * 10);
             }
           }
+        }
+      }
+
+      if (p.isCharging) {
+        if (rawInX !== 0 && !mouseMovedRecently && gpRightMag <= 0.05) {
+          p.aimAngle +=
+            rawInX *
+            1.65 *
+            controlSettingsRef.current.controllerAimSensitivity *
+            dt;
+          lastManualAimTime = elapsedTime;
+        }
+        const chargeStep = advanceChargeState(
+          p.chargeRatio,
+          p.chargeDirection,
+          p.chargeHoldTime,
+          dt,
+          curStepObj.chargeSpeedMultiplier
+        );
+        p.chargeRatio = chargeStep.chargeRatio;
+        p.chargeDirection = chargeStep.chargeDirection;
+        p.chargeHoldTime = chargeStep.chargeHoldTime;
+
+        if (chargeStep.overcharged) {
+          releaseJump();
         }
       }
 
@@ -3915,14 +4141,24 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
       }
       if (physResult.resetRunesWrongOrder || physResult.resetRunesTimeout) {
         soundEngine.playLedgeBonk();
+        cameraTrauma = Math.max(cameraTrauma, 0.36);
         spawnBurst(p.x, p.y + 0.2, p.z, 12);
       }
       if (physResult.unlockedTrailGate) {
         soundEngine.playStepLand(true);
         spawnBurst(p.x, p.y + 0.3, p.z, 16);
       }
-      if (physResult.bouncedOffLedge) {
+      if (
+        physResult.bouncedOffLedge ||
+        physResult.knockedByHazard ||
+        physResult.repulsedByLockedGate
+      ) {
         soundEngine.playLedgeBonk();
+        cameraTrauma = Math.max(
+          cameraTrauma,
+          physResult.repulsedByLockedGate ? 0.48 : 0.32
+        );
+        spawnBurst(p.x, p.y + 0.25, p.z, 14);
       }
       if (physResult.cameraShiftedTo) {
         activeCameraPresetRef.current = physResult.cameraShiftedTo;
@@ -4400,6 +4636,13 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
               (targetY - entry.gateEnergyMesh.position.y) * Math.min(1, dt * 8);
             entry.gateEnergyMat.opacity = gateUnlocked ? 0.0 : 0.78;
           }
+          if (entry.conduitMats) {
+            for (const cMat of entry.conduitMats) {
+              cMat.color.setHex(gateUnlocked ? 0x10b981 : 0xf59e0b);
+              cMat.emissive.setHex(gateUnlocked ? 0x059669 : 0xd97706);
+              cMat.emissiveIntensity = gateUnlocked ? 1.35 : 0.85;
+            }
+          }
         }
 
         if (entry.npcGroup && entry.step.npc) {
@@ -4429,7 +4672,7 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
         }
       }
 
-      // Update Hero Wayfarer Position, Walk Stride, Title Warm-Ups & Squash/Stretch
+      // Update Hero Wayfarer Position, Walk Stride, Velocity Lean, Title Warm-Ups & Squash/Stretch
       playerGroup.position.set(p.x, p.y, p.z);
       heroContactShadow.visible = p.grounded;
 
@@ -4450,25 +4693,40 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
         const idleHop =
           Math.max(0, Math.sin(elapsedTime * 3.4)) * 0.11 + celebHop;
         playerVisual.position.y = idleHop;
-        playerVisual.rotation.y =
+        playerVisual.rotation.set(
+          0,
           0.65 +
-          Math.sin(elapsedTime * 0.95) * 0.52 +
-          dampedPointerX * 0.35;
+            Math.sin(elapsedTime * 0.95) * 0.52 +
+            dampedPointerX * 0.35,
+          0
+        );
         const hopSquash = 1.0 + Math.sin(elapsedTime * 6.8) * 0.045;
         playerVisual.scale.set(1 / Math.sqrt(hopSquash), hopSquash, 1 / Math.sqrt(hopSquash));
         legL.rotation.z = Math.sin(elapsedTime * 3.4) * 0.22;
         legR.rotation.z = -Math.sin(elapsedTime * 3.4) * 0.22;
         staffPole.rotation.z = -0.14 + Math.sin(elapsedTime * 2.6) * 0.16;
       } else {
-        playerVisual.rotation.y = -p.aimAngle;
-        staffPole.rotation.z = -0.14;
+        const speedHoriz = Math.hypot(p.vx, p.vz);
+        const fwdCos = Math.cos(p.aimAngle);
+        const fwdSin = Math.sin(p.aimAngle);
+        const fwdVel = p.vx * fwdCos + p.vz * fwdSin;
+        const latVel = -p.vx * fwdSin + p.vz * fwdCos;
+        const leanPitch = p.isTumbling
+          ? p.tumbleSpin
+          : Math.max(-0.24, Math.min(0.28, fwdVel * 0.045));
+        const leanRoll = p.isTumbling
+          ? p.tumbleSpin * 0.6
+          : Math.max(-0.22, Math.min(0.22, -latVel * 0.04));
+
+        playerVisual.rotation.set(leanRoll, -p.aimAngle, -leanPitch);
+        staffPole.rotation.z = -0.14 - Math.min(0.22, speedHoriz * 0.03);
 
         if (p.isCharging) {
-          const squash = 1 - p.chargeRatio * 0.28;
-          const stretchW = 1 + p.chargeRatio * 0.16;
+          const squash = 1 - p.chargeRatio * 0.3;
+          const stretchW = 1 + p.chargeRatio * 0.18;
           playerVisual.scale.set(stretchW, squash, stretchW);
         } else if (!p.grounded) {
-          const stretchY = 1 + Math.min(0.22, Math.abs(p.vy) * 0.02);
+          const stretchY = 1 + Math.min(0.24, Math.abs(p.vy) * 0.022);
           playerVisual.scale.set(
             1 / Math.sqrt(stretchY),
             stretchY,
@@ -4478,12 +4736,14 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
           playerVisual.scale.lerp(_unitScale, Math.min(1, dt * 14));
         }
 
-        const speedHoriz = Math.hypot(p.vx, p.vz);
         if (p.grounded && speedHoriz > 0.2) {
-          const stride = Math.sin(elapsedTime * 14) * 0.35;
+          const strideFreq = p.isSprinting ? 19 : 14;
+          const stride = Math.sin(elapsedTime * strideFreq) * (p.isSprinting ? 0.46 : 0.35);
           legL.rotation.z = stride;
           legR.rotation.z = -stride;
-          playerVisual.position.y = Math.abs(Math.cos(elapsedTime * 14)) * 0.05;
+          playerVisual.position.y =
+            Math.abs(Math.cos(elapsedTime * strideFreq)) *
+            (p.isSprinting ? 0.075 : 0.05);
         } else {
           legL.rotation.z = 0;
           legR.rotation.z = 0;
@@ -4508,38 +4768,45 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
       const nextStep = LEVELS_500[nextStepIdx] || LEVELS_500[0];
 
       if (showGameplayReticle) {
-        // Zero hand-holding: never show a landing target reticle on the next stage or a full-arc preview!
-        // Only show the player's foot-level facing arrow, and while actively charging, show 4 short
-        // takeoff impulse dots near the boots colored purely by raw leg tension (amber -> orange -> crimson).
-        landingReticle.visible = false;
+        const previewCharge = p.isCharging ? p.chargeRatio : 0.58;
+        const pred = computePredictedLandingSpot(
+          p.x,
+          p.y,
+          p.z,
+          previewCharge,
+          p.aimAngle,
+          nextStep,
+          elapsedTime
+        );
+
+        landingReticle.position.set(pred.x, nextStep.y + 0.03, pred.z);
+        landingReticle.visible = p.isCharging;
+        landingReticleMat.color.setHex(pred.isOnTarget ? 0x10b981 : 0xf97316);
+        landingReticleMat.opacity = p.isCharging ? 0.85 : 0;
 
         if (p.isCharging) {
           chargeRingMat.opacity = 0.92;
           const scale = 0.85 + p.chargeRatio * 0.68;
           chargeRingMesh.scale.set(scale, scale, 1);
 
-          const tensionColor =
-            p.chargeRatio > 0.82
-              ? 0xf43f5e
-              : p.chargeRatio > 0.48
-              ? 0xf97316
-              : 0xfacc15;
+          const tensionColor = pred.isOnTarget
+            ? 0x10b981
+            : p.chargeRatio > 0.82
+            ? 0xf43f5e
+            : 0xfacc15;
           chargeRingMat.color.setHex(tensionColor);
           arcDotMat.color.setHex(tensionColor);
           arcDotMat.opacity = 0.88;
 
           const vel = computeJumpVelocity(p.chargeRatio, p.aimAngle);
           for (let i = 0; i < arcDotMeshes.length; i++) {
-            if (i < 4) {
-              const t = (i + 1) * 0.038;
-              const dx = p.x + vel.vx * t;
-              const dy = p.y + 0.25 + vel.vy * t - 0.5 * 22.0 * t * t;
-              const dz = p.z + vel.vz * t;
-              arcDotMeshes[i].position.set(dx, dy, dz);
-              arcDotMeshes[i].visible = true;
-            } else {
-              arcDotMeshes[i].visible = false;
-            }
+            const frac = (i + 1) / (arcDotMeshes.length + 1);
+            const t = frac * pred.flightTime;
+            const dx = p.x + vel.vx * t;
+            const dy = p.y + 0.25 + vel.vy * t - 0.5 * 22.0 * t * t;
+            const dz = p.z + vel.vz * t;
+            arcDotMeshes[i].position.set(dx, dy, dz);
+            arcDotMeshes[i].visible = true;
           }
         } else {
           chargeRingMat.opacity = 0.0;
@@ -4911,6 +5178,7 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
           curStepObj.stepNumber
         );
         const stepGateUnlocked = isStepGateUnlocked(curStepObj, p);
+        const progressionBrief = getStageProgressionBrief(curStepObj, p);
         const nextCameraShiftStep =
           (Math.floor(p.currentStep / CAMERA_SHIFT_INTERVAL_STEPS) + 1) *
           CAMERA_SHIFT_INTERVAL_STEPS;
@@ -4962,6 +5230,10 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
           activeRuneCount,
           totalRuneCount,
           stepGateUnlocked,
+          stamina: Math.round(p.stamina),
+          isSprinting: p.isSprinting,
+          stageFailStreak: p.stageFailStreak,
+          progressionBrief,
           cameraMode: activeCameraPresetRef.current,
           nextCameraShiftStep,
         });
@@ -4988,23 +5260,27 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
         const poll = () => {
           const state = sync && gl.getSyncParameter(sync, gl.SYNC_STATUS);
           if (state === gl.UNSIGNALED) {
-            frameId = window.setTimeout(poll, 5);
+            frameId = window.setTimeout(poll, 4);
           } else {
             if (sync) gl.deleteSync(sync);
-            frameId = window.setTimeout(() => cb(performance.now()), 80);
+            frameId = window.setTimeout(() => cb(performance.now()), 16);
           }
         };
-        frameId = window.setTimeout(poll, 5);
+        frameId = window.setTimeout(poll, 4);
       } else {
-        frameId = window.setTimeout(() => cb(performance.now()), 80);
+        frameId = window.setTimeout(() => cb(performance.now()), 16);
       }
     }
 
     const tick = (now: number) => {
-      const rawDt = Math.min(0.05, Math.max(0.001, (now - lastTime) / 1000));
+      const frameSec = Math.min(0.2, Math.max(0.001, (now - lastTime) / 1000));
       lastTime = now;
-      stepSimulation(rawDt);
-      renderScene(rawDt);
+      const subSteps = Math.max(1, Math.ceil(frameSec / (1 / 60)));
+      const subDt = frameSec / subSteps;
+      for (let s = 0; s < subSteps; s++) {
+        stepSimulation(subDt);
+      }
+      renderScene(frameSec);
       if (isSoftwareGl) {
         afterDraw(tick);
       } else {
@@ -5016,12 +5292,16 @@ export const IsometricCanvas: React.FC<IsometricCanvasProps> = ({
     return () => {
       cancelAnimationFrame(frameId);
       clearTimeout(frameId);
+      resizeObserver?.disconnect();
+      window.visualViewport?.removeEventListener('resize', handleResize);
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
       window.removeEventListener('pointermove', handlePointerMove);
       window.removeEventListener('pointerup', handlePointerUp);
       window.removeEventListener('resize', handleResize);
       domElem.removeEventListener('pointerdown', handlePointerDown);
+      domElem.removeEventListener('touchstart', handleTouchStart);
+      domElem.removeEventListener('touchmove', handleTouchMove);
       envTex.dispose();
       composer?.dispose();
       renderer.dispose();

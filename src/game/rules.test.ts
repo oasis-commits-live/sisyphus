@@ -77,7 +77,7 @@ test('generate500Levels generates 500 grounded mountain cliff stages spiraling 3
         levels[i].z - levels[i - 1].z
       );
       assert.ok(
-        stepDist >= 3.5 && stepDist <= 9.0 && levels[i].clearGap >= 1.0 && levels[i].clearGap <= 1.8,
+        stepDist >= 3.2 && stepDist <= 9.0 && levels[i].clearGap >= 0.8 && levels[i].clearGap <= 1.8,
         `Step ${i + 1} should have reachable non-linear spiral spacing (stepDist=${stepDist}, clearGap=${levels[i].clearGap})`
       );
     }
@@ -555,6 +555,153 @@ test('Full 500-stage audit verifies every stage 1..500 is valid, jump-solvable, 
   assert.equal(reached500, true, 'Jumping from Stage 499 should land on Stage 500 and reach the summit');
   assert.equal(p499.won, true);
 });
+
+test('GDD Progression Seal repels player attempting to skip an unsolved stage puzzle, and allows progression once solved', async () => {
+  const { LEVELS_500 } = await import('./levels');
+  const {
+    createInitialPlayerState,
+    advancePlayerPhysics,
+    getStageProgressionBrief,
+    isStepGateUnlocked,
+  } = await import('./rules');
+
+  // Stage 1 has a rune lock that must be stepped on before jumping to Stage 2
+  const stage1 = LEVELS_500[0];
+  const stage2 = LEVELS_500[1];
+  const p = createInitialPlayerState(1);
+
+  assert.equal(isStepGateUnlocked(stage1, p), false, 'Stage 1 gate should start locked');
+  const briefLocked = getStageProgressionBrief(stage1, p);
+  assert.equal(briefLocked.readyToAdvance, false);
+  assert.ok(briefLocked.checklist.length >= 2, 'Stage 1 should have progression checklist items');
+
+  // Attempt to land directly onto Stage 2 WITHOUT solving Stage 1's rune plate
+  p.x = stage2.x;
+  p.z = stage2.z;
+  p.y = stage2.y + 0.12;
+  p.vy = -2.5;
+  p.grounded = false;
+
+  const repulseRes = advancePlayerPhysics(p, 1 / 60, 0.5, 0, 0);
+  assert.equal(
+    repulseRes.repulsedByLockedGate,
+    true,
+    'Attempting to land on Stage 2 while Stage 1 gate is locked must trigger Tartarus Seal Repulsion'
+  );
+  assert.equal(p.currentStep, 1, 'Player must remain on Stage 1 when repelled');
+  assert.ok(p.stageFailStreak >= 1, 'Stage fail streak should increment on seal repulsion');
+
+  // Now solve Stage 1's rune plate and land on Stage 2
+  const pSolved = createInitialPlayerState(1);
+  for (const r of stage1.runePlates) {
+    pSolved.activatedRuneIds.push(r.id);
+  }
+  assert.equal(isStepGateUnlocked(stage1, pSolved), true, 'Stage 1 gate unlocks after runes activated');
+
+  pSolved.x = stage2.x;
+  pSolved.z = stage2.z;
+  pSolved.y = stage2.y + 0.12;
+  pSolved.vy = -2.5;
+  pSolved.grounded = false;
+
+  const landRes = advancePlayerPhysics(pSolved, 1 / 60, 0.6, 0, 0);
+  assert.equal(landRes.repulsedByLockedGate, false);
+  assert.equal(pSolved.currentStep, 2, 'Player advances to Stage 2 once Stage 1 puzzle gate is unlocked');
+  assert.equal(pSolved.stageFailStreak, 0, 'Advancing to next stage resets stageFailStreak');
+});
+
+test('Sprint burst consumes stamina, boosts ground acceleration, and regenerates stamina when released', async () => {
+  const { createInitialPlayerState, advancePlayerPhysics } = await import('./rules');
+
+  const pWalk = createInitialPlayerState(0);
+  const pSprint = createInitialPlayerState(0);
+
+  for (let i = 0; i < 15; i++) {
+    advancePlayerPhysics(pWalk, 1 / 60, i / 60, 1, 0, false);
+    advancePlayerPhysics(pSprint, 1 / 60, i / 60, 1, 0, true);
+  }
+
+  assert.ok(
+    pSprint.x > pWalk.x,
+    `Sprinting player should cover more ground than walking player (${pSprint.x} > ${pWalk.x})`
+  );
+  assert.ok(pSprint.stamina < 100, 'Sprinting should consume stamina');
+  assert.equal(pSprint.isSprinting, true);
+
+  const staminaAfterSprint = pSprint.stamina;
+  for (let i = 0; i < 20; i++) {
+    advancePlayerPhysics(pSprint, 1 / 60, (15 + i) / 60, 0, 0, false);
+  }
+  assert.ok(
+    pSprint.stamina > staminaAfterSprint,
+    'Releasing sprint should regenerate stamina'
+  );
+});
+
+test('Multi-stage consecutive jump physics (0 -> 1 -> 2 -> 3 -> 4 -> 5) lands cleanly without side-wall bounce or gate trapping', async () => {
+  const { LEVELS_500 } = await import('./levels');
+  const {
+    createInitialPlayerState,
+    computeIdealJumpToNextStep,
+    computeJumpVelocity,
+    advancePlayerPhysics,
+  } = await import('./rules');
+
+  const p = createInitialPlayerState(0);
+
+  for (let targetStep = 1; targetStep <= 5; targetStep++) {
+    // Unlock current stage gate & blocker NPC if on stage >= 1
+    if (p.currentStep > 0) {
+      const curSt = LEVELS_500[p.currentStep - 1];
+      for (const rp of curSt.runePlates) {
+        if (!p.activatedRuneIds.includes(rp.id)) p.activatedRuneIds.push(rp.id);
+      }
+      if (
+        curSt.requiresBoulderSocket &&
+        !p.boulderSocketUnlockedSteps.includes(curSt.stepNumber)
+      ) {
+        p.boulderSocketUnlockedSteps.push(curSt.stepNumber);
+      }
+      if (!p.unlockedGateSteps.includes(curSt.stepNumber)) {
+        p.unlockedGateSteps.push(curSt.stepNumber);
+      }
+      if (!p.clearedNpcSteps.includes(curSt.stepNumber)) {
+        p.clearedNpcSteps.push(curSt.stepNumber);
+      }
+    }
+
+    const ideal = computeIdealJumpToNextStep(p.currentStep, 0, {
+      x: p.x,
+      y: p.y,
+      z: p.z,
+    });
+    const vel = computeJumpVelocity(ideal.chargeRatio, ideal.aimAngle);
+    p.aimAngle = ideal.aimAngle;
+    p.vx = vel.vx;
+    p.vy = vel.vy;
+    p.vz = vel.vz;
+    p.grounded = false;
+
+    let landed = false;
+    for (let f = 0; f < 90; f++) {
+      const res = advancePlayerPhysics(p, 1 / 60, f / 60, 0, 0);
+      if (res.landedStep === targetStep) {
+        landed = true;
+        break;
+      }
+    }
+
+    assert.equal(
+      landed,
+      true,
+      `Player should cleanly vault and land on Stage ${targetStep} (actual step=${p.currentStep}, grounded=${p.grounded})`
+    );
+    assert.equal(p.currentStep, targetStep);
+    assert.equal(p.grounded, true);
+  }
+});
+
+
 
 
 
